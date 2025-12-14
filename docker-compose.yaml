@@ -1,0 +1,37 @@
+services:
+  app:
+    build: ./app
+    ports:
+      - "8001:8001"
+    tty: true
+    stdin_open: true
+    container_name: python-primekgqa-experiment
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./result:/app/result
+    working_dir: /app
+    depends_on:
+      - neo4j
+  neo4j:
+    image: neo4j:5.22.0-community
+    container_name: neo4j_primekgqa
+    restart: always
+    environment:
+      - NEO4J_dbms_databases_writable=true
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_server_memory_heap_initial__size=3g
+      - NEO4J_server_memory_heap_max__size=4g
+      - NEO4J_server_memory_pagecache_size=6g
+    volumes:
+      - ./volume/logs:/logs
+      - ./volume/data:/data
+    ports:
+      - 7474:7474
+      - 7687:7687
