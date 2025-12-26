@@ -42,7 +42,7 @@ def build_one_hop_chain_cypher(
     return f"""
 CALL {{
   MATCH (a{lbl})
-  WITH a, degree(a) AS deg
+  WITH a, COUNT {{ (a)--() }} AS deg
   WHERE {deg_min} <= deg AND deg <= {deg_max}
     AND rand() < {anchor_keep_prob}
   RETURN a
@@ -114,7 +114,7 @@ def build_two_hop_chain_cypher(
     return f"""
 CALL {{
   MATCH (a{lbl})
-  WITH a, degree(a) AS deg
+  WITH a, COUNT {{ (a)--() }} AS deg
   WHERE {deg_min} <= deg AND deg <= {deg_max}
     AND rand() < {anchor_keep_prob}
   RETURN a
@@ -215,7 +215,7 @@ def build_two_anchor_intersection_cypher(
 // 共通点になりうるノード x を先に集める（degree帯で絞る）
 CALL {{
   MATCH (x{lbl})
-  WITH x, degree(x) AS deg
+  WITH x, COUNT {{ (x)--() }} AS deg
   WHERE {deg_min} <= deg AND deg <= {deg_max}
     AND rand() < {anchor_keep_prob}
   RETURN x
@@ -345,7 +345,7 @@ def build_three_anchor_intersection_cypher(
     return f"""
 CALL {{
   MATCH (x{lbl})
-  WITH x, degree(x) AS deg
+  WITH x, COUNT {{ (x)--() }} AS deg
   WHERE {deg_min} <= deg AND deg <= {deg_max}
     AND rand() < {anchor_keep_prob}
   RETURN x
@@ -421,11 +421,23 @@ theree_anchor_intersection_cypher = build_three_anchor_intersection_cypher()
 # ---------------------------------------------------------------------------
 
 simple_one_hop_chain_cypher = """
-MATCH ()-[r]-()
-WITH r,
-     CASE WHEN rand() < 0.5 THEN startNode(r) ELSE endNode(r) END AS a,
-     CASE WHEN rand() < 0.5 THEN endNode(r) ELSE startNode(r) END AS x
-WHERE rand() < $keep_prob
+CALL {
+  MATCH (a)
+  WHERE rand() < $keep_prob
+  RETURN a
+  LIMIT $anchor_pool
+}
+WITH collect(a) AS anchors
+WHERE size(anchors) > 0
+UNWIND range(1, $limit) AS i
+WITH anchors, apoc.coll.randomItem(anchors) AS a
+CALL {
+  WITH a
+  MATCH (a)-[r]-(x)
+  RETURN r, x
+  ORDER BY rand()
+  LIMIT 1
+}
 RETURN
   elementId(a) AS anchor_id,
   a.name       AS anchor_name,
@@ -433,19 +445,36 @@ RETURN
   type(r) AS rel_type,
   1 AS answer_count,
   [elementId(x)] AS answer_ids_sample,
-  [{id: elementId(x), name: x.name, types: coalesce(x.type, labels(x))}] AS answer_nodes_sample
-LIMIT $limit;
+  [{id: elementId(x), name: x.name, types: coalesce(x.type, labels(x))}] AS answer_nodes_sample;
 """
 
 
 simple_two_hop_chain_cypher = """
-MATCH ()-[r1]-()
-WITH r1,
-     CASE WHEN rand() < 0.5 THEN startNode(r1) ELSE endNode(r1) END AS a,
-     CASE WHEN rand() < 0.5 THEN endNode(r1) ELSE startNode(r1) END AS z
-MATCH (z)-[r2]-(x)
-WHERE a <> z AND z <> x AND a <> x
-  AND rand() < $keep_prob
+CALL {
+  MATCH (a)
+  WHERE rand() < $keep_prob
+  RETURN a
+  LIMIT $anchor_pool
+}
+WITH collect(a) AS anchors
+WHERE size(anchors) > 0
+UNWIND range(1, $limit) AS i
+WITH anchors, apoc.coll.randomItem(anchors) AS a
+CALL {
+  WITH a
+  MATCH (a)-[r1]-(z)
+  RETURN r1, z
+  ORDER BY rand()
+  LIMIT 1
+}
+CALL {
+  WITH a, z
+  MATCH (z)-[r2]-(x)
+  WHERE x <> a
+  RETURN r2, x
+  ORDER BY rand()
+  LIMIT 1
+}
 RETURN
   elementId(a) AS anchor_id,
   a.name       AS anchor_name,
@@ -454,19 +483,36 @@ RETURN
   type(r2) AS rel2,
   1 AS answer_count,
   [elementId(x)] AS answer_ids_sample,
-  [{id: elementId(x), name: x.name, types: coalesce(x.type, labels(x))}] AS answer_nodes_sample
-LIMIT $limit;
+  [{id: elementId(x), name: x.name, types: coalesce(x.type, labels(x))}] AS answer_nodes_sample;
 """
 
 
 simple_two_anchor_intersection_cypher = """
-MATCH ()-[ra]-()
-WITH ra,
-     CASE WHEN rand() < 0.5 THEN startNode(ra) ELSE endNode(ra) END AS a,
-     CASE WHEN rand() < 0.5 THEN endNode(ra) ELSE startNode(ra) END AS y
-MATCH (y)-[rb]-(b)
-WHERE a <> b
-  AND rand() < $keep_prob
+CALL {
+  MATCH (a)
+  WHERE rand() < $keep_prob
+  RETURN a
+  LIMIT $anchor_pool
+}
+WITH collect(a) AS anchors
+WHERE size(anchors) > 0
+UNWIND range(1, $limit) AS i
+WITH anchors, apoc.coll.randomItem(anchors) AS a
+CALL {
+  WITH a
+  MATCH (a)-[ra]-(y)
+  RETURN ra, y
+  ORDER BY rand()
+  LIMIT 1
+}
+CALL {
+  WITH a, y
+  MATCH (y)-[rb]-(b)
+  WHERE b <> a
+  RETURN rb, b
+  ORDER BY rand()
+  LIMIT 1
+}
 RETURN
   elementId(a) AS anchorA_id,
   a.name       AS anchorA_name,
@@ -478,20 +524,44 @@ RETURN
   type(rb) AS anchorB_edge_type,
   1 AS answer_count,
   [elementId(y)] AS answer_ids_sample,
-  [{id: elementId(y), name: y.name, types: coalesce(y.type, labels(y))}] AS answer_nodes_sample
-LIMIT $limit;
+  [{id: elementId(y), name: y.name, types: coalesce(y.type, labels(y))}] AS answer_nodes_sample;
 """
 
 
 simple_three_anchor_intersection_cypher = """
-MATCH ()-[r1]-()
-WITH r1,
-     CASE WHEN rand() < 0.5 THEN startNode(r1) ELSE endNode(r1) END AS a,
-     CASE WHEN rand() < 0.5 THEN endNode(r1) ELSE startNode(r1) END AS y
-MATCH (y)-[r2]-(b)
-MATCH (y)-[r3]-(c)
-WHERE a <> b AND a <> c AND b <> c
-  AND rand() < $keep_prob
+CALL {
+  MATCH (a)
+  WHERE rand() < $keep_prob
+  RETURN a
+  LIMIT $anchor_pool
+}
+WITH collect(a) AS anchors
+WHERE size(anchors) > 0
+UNWIND range(1, $limit) AS i
+WITH anchors, apoc.coll.randomItem(anchors) AS a
+CALL {
+  WITH a
+  MATCH (a)-[r1]-(y)
+  RETURN r1, y
+  ORDER BY rand()
+  LIMIT 1
+}
+CALL {
+  WITH a, y
+  MATCH (y)-[r2]-(b)
+  WHERE b <> a
+  RETURN r2, b
+  ORDER BY rand()
+  LIMIT 1
+}
+CALL {
+  WITH a, y, b
+  MATCH (y)-[r3]-(c)
+  WHERE c <> a AND c <> b
+  RETURN r3, c
+  ORDER BY rand()
+  LIMIT 1
+}
 RETURN
   elementId(a) AS anchorA_id,
   a.name       AS anchorA_name,
@@ -507,6 +577,5 @@ RETURN
   type(r3) AS anchorC_edge_type,
   1 AS answer_count,
   [elementId(y)] AS answer_ids_sample,
-  [{id: elementId(y), name: y.name, types: coalesce(y.type, labels(y))}] AS answer_nodes_sample
-LIMIT $limit;
+  [{id: elementId(y), name: y.name, types: coalesce(y.type, labels(y))}] AS answer_nodes_sample;
 """

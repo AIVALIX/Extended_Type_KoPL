@@ -217,6 +217,8 @@ def run_queries_and_save(
                 remaining = limit_per_query - written
                 # Fetch more than needed (no DB-side ORDER BY rand), then randomize in Python.
                 fetch_limit = min(max(500, remaining * 5), 5_000)
+                if simple:
+                    fetch_limit = min(fetch_limit, 2_000)
 
                 if simple:
                     cypher = spec.cypher
@@ -255,6 +257,7 @@ def run_queries_and_save(
                         cypher,
                         limit=fetch_limit,
                         keep_prob=float(simple_keep_prob),
+                        anchor_pool=2000,
                     )
                 else:
                     result = session.run(cypher)
