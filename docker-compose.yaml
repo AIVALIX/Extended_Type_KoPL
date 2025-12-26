@@ -9,6 +9,7 @@ services:
     environment:
       PYTHONPATH: /app
     volumes:
+      - ./app:/app
       - ./data:/app/data
       - ./config:/app/config
       - ./result:/app/result
@@ -29,7 +30,9 @@ services:
       - NEO4J_server_memory_heap_initial__size=3g
       - NEO4J_server_memory_heap_max__size=4g
       - NEO4J_server_memory_pagecache_size=6g
+      - NEO4J_dbms_memory_transaction_total_max=3g
     volumes:
+      - ./data/kg:/import
       - ./volume/logs:/logs
       - ./volume/data:/data
     ports:

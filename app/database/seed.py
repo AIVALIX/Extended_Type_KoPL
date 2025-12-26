@@ -100,7 +100,13 @@ class GraphBatchProcessor:
     # -- RelationEmbedding -------------------------------------------- #
     def _upsert_relation_embeddings(self, records: List[dict]) -> None:
         uniq = sorted({r["relation"] for r in records})
-        for chunk in _chunked(uniq, self.embed_batch_size):
+        self._upsert_relation_embeddings_from_names(uniq)
+
+    def _upsert_relation_embeddings_from_names(self, rel_names: List[str]) -> None:
+        if not rel_names:
+            return
+
+        for chunk in _chunked(rel_names, self.embed_batch_size):
             vectors = self.embedder.embed_many(chunk)
             rows = [{"rel": r, "vec": v} for r, v in zip(chunk, vectors)]
             q = """
@@ -109,6 +115,12 @@ class GraphBatchProcessor:
             SET   re.embedding_vector = row.vec
             """
             self.graph.run(q, rows=rows)
+
+    def refresh_relation_embeddings_from_graph(self) -> None:
+        """Fetch DISTINCT relationship types already stored in Neo4j and refresh embeddings."""
+        q = "MATCH ()-[r]->() RETURN DISTINCT type(r) AS rel"
+        rels = sorted(row["rel"] for row in self.graph.run(q) if row["rel"])
+        self._upsert_relation_embeddings_from_names(rels)
 
     # -- Dynamic relationships ---------------------------------------- #
     def _merge_relationships(self, records: List[dict]) -> None:
@@ -162,7 +174,7 @@ def _chunked(seq: Iterable, size: int):
 if __name__ == "__main__":
     sample_path = "/app/data/metaqa/seed/seed.jsonl"  # 例: JSONL ファイルパス
     processor = GraphBatchProcessor(batch_size=2_000, embed_batch_size=50)
-    processor.process_jsonl_file(sample_path)
+    processor.refresh_relation_embeddings_from_graph()
     print("インポート完了")
 
 # python database/seed.py
