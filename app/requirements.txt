@@ -16,3 +16,4 @@ langchain-neo4j
 langgraph
 jsonlines
 py2neo
+matplotlib

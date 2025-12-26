@@ -421,7 +421,10 @@ theree_anchor_intersection_cypher = build_three_anchor_intersection_cypher()
 # ---------------------------------------------------------------------------
 
 simple_one_hop_chain_cypher = """
-MATCH (a)-[r]-(x)
+MATCH ()-[r]-()
+WITH r,
+     CASE WHEN rand() < 0.5 THEN startNode(r) ELSE endNode(r) END AS a,
+     CASE WHEN rand() < 0.5 THEN endNode(r) ELSE startNode(r) END AS x
 WHERE rand() < $keep_prob
 RETURN
   elementId(a) AS anchor_id,
@@ -436,7 +439,11 @@ LIMIT $limit;
 
 
 simple_two_hop_chain_cypher = """
-MATCH (a)-[r1]-(z)-[r2]-(x)
+MATCH ()-[r1]-()
+WITH r1,
+     CASE WHEN rand() < 0.5 THEN startNode(r1) ELSE endNode(r1) END AS a,
+     CASE WHEN rand() < 0.5 THEN endNode(r1) ELSE startNode(r1) END AS z
+MATCH (z)-[r2]-(x)
 WHERE a <> z AND z <> x AND a <> x
   AND rand() < $keep_prob
 RETURN
@@ -453,7 +460,11 @@ LIMIT $limit;
 
 
 simple_two_anchor_intersection_cypher = """
-MATCH (a)-[ra]-(y)-[rb]-(b)
+MATCH ()-[ra]-()
+WITH ra,
+     CASE WHEN rand() < 0.5 THEN startNode(ra) ELSE endNode(ra) END AS a,
+     CASE WHEN rand() < 0.5 THEN endNode(ra) ELSE startNode(ra) END AS y
+MATCH (y)-[rb]-(b)
 WHERE a <> b
   AND rand() < $keep_prob
 RETURN
@@ -473,8 +484,12 @@ LIMIT $limit;
 
 
 simple_three_anchor_intersection_cypher = """
-MATCH (a)-[r1]-(y)-[r2]-(b)
-MATCH (c)-[r3]-(y)
+MATCH ()-[r1]-()
+WITH r1,
+     CASE WHEN rand() < 0.5 THEN startNode(r1) ELSE endNode(r1) END AS a,
+     CASE WHEN rand() < 0.5 THEN endNode(r1) ELSE startNode(r1) END AS y
+MATCH (y)-[r2]-(b)
+MATCH (y)-[r3]-(c)
 WHERE a <> b AND a <> c AND b <> c
   AND rand() < $keep_prob
 RETURN
