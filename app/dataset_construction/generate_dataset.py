@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple, Set
 
 from neo4j import Driver, GraphDatabase
+from tqdm import tqdm
 
 from core.config import get_settings
 from dataset_construction.Cypher_query import (
@@ -68,6 +69,7 @@ def run_queries_and_save(
     three_anchor_tries: int,
     seed: int,
     simple: bool,
+    datasets: List[str] | None = None,
 ) -> Tuple[Path, List[Tuple[str, int]]]:
     """Run the 4 dataset-construction queries and write results as JSONL.
 
@@ -123,6 +125,12 @@ def run_queries_and_save(
                 ),
             ),
         ]
+
+    if datasets:
+        wanted = set(datasets)
+        specs = [s for s in specs if s.name in wanted]
+        if not specs:
+            raise SystemExit(f"no datasets selected (got: {datasets})")
 
     driver = _connect_graph()
 
@@ -200,12 +208,21 @@ def run_queries_and_save(
         resolved_label = resolve_node_label(session)
 
         for spec in specs:
+            pbar = tqdm(
+                total=limit_per_query,
+                desc=f"generate:{spec.name}",
+                unit="row",
+                dynamic_ncols=True,
+            )
             per_query_path = out_dir / f"{spec.name}.jsonl"
             if per_query_path.exists():
                 per_query_path.unlink()
 
             seen: Set[Tuple[Any, ...]] = set()
             written = 0
+
+            # tqdm initial position
+            pbar.update(0)
 
             simple_keep_prob = 0.01
             simple_attempts = 0
@@ -300,11 +317,27 @@ def run_queries_and_save(
                 )
 
                 written += len(new_rows)
+                pbar.update(len(new_rows))
+
+                # Useful live debug info without being too noisy
+                pbar.set_postfix(
+                    {
+                        "new": len(new_rows),
+                        "seen": len(seen),
+                        "remaining": limit_per_query - written,
+                        "simple": int(simple),
+                    }
+                )
 
                 if simple:
                     simple_no_progress = 0
 
             counts.append((spec.name, written))
+            # In case we stopped early, make the bar reflect actual written rows.
+            if written < pbar.total:
+                pbar.total = written
+            pbar.refresh()
+            pbar.close()
 
     driver.close()
 
@@ -399,6 +432,22 @@ def main() -> None:
         default=1000,
         help="(reserved) batch limit; generator uses internal safe batch sizes",
     )
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        nargs="*",
+        default=[],
+        choices=[
+            "one_hop_chain",
+            "two_hop_chain",
+            "two_anchor_intersection",
+            "three_anchor_intersection",
+        ],
+        help=(
+            "If provided, generate only these datasets. "
+            "Example: --datasets two_hop_chain"
+        ),
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -415,6 +464,7 @@ def main() -> None:
         three_anchor_tries=args.three_anchor_tries,
         seed=args.seed,
         simple=args.simple,
+        datasets=list(args.datasets) if args.datasets else None,
     )
 
     print(f"Wrote: {combined_path}")

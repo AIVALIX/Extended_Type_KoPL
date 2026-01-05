@@ -63,6 +63,23 @@ def main() -> None:
     parser.add_argument("--skip-split", action="store_true")
     parser.add_argument("--skip-plot", action="store_true")
 
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        nargs="*",
+        default=[],
+        choices=[
+            "one_hop_chain",
+            "two_hop_chain",
+            "two_anchor_intersection",
+            "three_anchor_intersection",
+        ],
+        help=(
+            "If provided, run only these datasets end-to-end. "
+            "Example: --datasets two_hop_chain"
+        ),
+    )
+
     args = parser.parse_args()
 
     if args.train + args.val + args.test != args.sample_size:
@@ -101,38 +118,50 @@ def main() -> None:
         ]
         if args.simple:
             cmd.append("--simple")
+
+        if args.datasets:
+            cmd.append("--datasets")
+            cmd.extend(list(args.datasets))
+
         _run(cmd)
 
     if not args.skip_split:
-        _run(
-            [
-                sys.executable,
-                str(split_py),
-                "--in-dir",
-                str(args.generate_out_dir),
-                "--out-dir",
-                str(args.splits_out_dir),
-                "--seed",
-                str(args.seed),
-                "--sample-size",
-                str(args.sample_size),
-                "--train",
-                str(args.train),
-                "--val",
-                str(args.val),
-                "--test",
-                str(args.test),
-            ]
-        )
+        cmd = [
+            sys.executable,
+            str(split_py),
+            "--in-dir",
+            str(args.generate_out_dir),
+            "--out-dir",
+            str(args.splits_out_dir),
+            "--seed",
+            str(args.seed),
+            "--sample-size",
+            str(args.sample_size),
+            "--train",
+            str(args.train),
+            "--val",
+            str(args.val),
+            "--test",
+            str(args.test),
+        ]
+        if args.datasets:
+            cmd.append("--datasets")
+            cmd.extend(list(args.datasets))
+        _run(cmd)
 
     if not args.skip_plot:
-        datasets = [
-            "one_hop_chain",
-            "two_hop_chain",
-            "two_anchor_intersection",
-            "three_anchor_intersection",
-            "all",
-        ]
+        if args.datasets:
+            datasets = list(args.datasets)
+            if len(datasets) > 1:
+                datasets.append("all")
+        else:
+            datasets = [
+                "one_hop_chain",
+                "two_hop_chain",
+                "two_anchor_intersection",
+                "three_anchor_intersection",
+                "all",
+            ]
         for ds in datasets:
             _run(
                 [
@@ -154,3 +183,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# 使用方法
+"""
+docker compose run --rm app python dataset_construction/run_all.py --limit-per-query 100000 --sample-size 15000 --train 10000 --val 2500 --test 2500 --simple
+"""

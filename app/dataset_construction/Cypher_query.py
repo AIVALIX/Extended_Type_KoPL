@@ -128,7 +128,8 @@ WITH a,
      type(r1) AS rel1,
      type(r2) AS rel2,
      count(DISTINCT x) AS answer_count,
-     collect(DISTINCT x)[0..{max_answers}] AS answers
+     collect(DISTINCT x)[0..{max_answers}] AS answers,
+     collect(DISTINCT z)[0..{max_answers}] AS mid_nodes
 WHERE answer_count >= {min_answers} AND answer_count <= {max_answers}
 
 RETURN
@@ -137,6 +138,8 @@ RETURN
   coalesce(a.type, labels(a)) AS anchor_types,
   rel1, rel2,
   answer_count,
+  [n IN mid_nodes | elementId(n)] AS mid_ids_sample,
+  [n IN mid_nodes | {{id: elementId(n), name: n.name, types: coalesce(n.type, labels(n))}}] AS mid_nodes_sample,
   [n IN answers | elementId(n)] AS answer_ids_sample,
   [n IN answers | {{id: elementId(n), name: n.name, types: coalesce(n.type, labels(n))}}] AS answer_nodes_sample
 LIMIT {limit};
@@ -482,6 +485,8 @@ RETURN
   type(r1) AS rel1,
   type(r2) AS rel2,
   1 AS answer_count,
+  [elementId(z)] AS mid_ids_sample,
+  [{id: elementId(z), name: z.name, types: coalesce(z.type, labels(z))}] AS mid_nodes_sample,
   [elementId(x)] AS answer_ids_sample,
   [{id: elementId(x), name: x.name, types: coalesce(x.type, labels(x))}] AS answer_nodes_sample;
 """

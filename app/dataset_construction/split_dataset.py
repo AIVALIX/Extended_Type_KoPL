@@ -225,6 +225,22 @@ def main() -> None:
     parser.add_argument(
         "--test", type=int, default=2_500, help="Test size (default: 2500)"
     )
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        nargs="*",
+        default=[],
+        choices=[
+            "one_hop_chain",
+            "two_hop_chain",
+            "two_anchor_intersection",
+            "three_anchor_intersection",
+        ],
+        help=(
+            "If provided, process only these datasets (default: all 4). "
+            "Example: --datasets two_hop_chain"
+        ),
+    )
     args = parser.parse_args()
 
     split = SplitSpec(train=args.train, val=args.val, test=args.test)
@@ -233,12 +249,19 @@ def main() -> None:
             f"train+val+test must equal sample-size (got {split.total} vs {args.sample_size})"
         )
 
+    selected = set(args.datasets) if args.datasets else None
+
     sources: List[Tuple[str, Path]] = []
     for query_type, filename in DEFAULT_QUERY_FILES:
+        if selected is not None and query_type not in selected:
+            continue
         p = args.in_dir / filename
         if not p.exists():
             raise SystemExit(f"missing input file: {p}")
         sources.append((query_type, p))
+
+    if not sources:
+        raise SystemExit("no input datasets selected")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
