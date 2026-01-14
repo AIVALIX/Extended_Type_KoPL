@@ -40,27 +40,48 @@ def build_one_hop_chain_cypher(
 ) -> str:
     lbl = f":{node_label}" if node_label else ""
     return f"""
+// Reverse lookup (answer-first)
+// 1) Sample candidate answers x (optionally degree-constrained to avoid hubs)
 CALL {{
-  MATCH (a{lbl})
-  WITH a, COUNT {{ (a)--() }} AS deg
-  WHERE {deg_min} <= deg AND deg <= {deg_max}
-    AND rand() < {anchor_keep_prob}
-  RETURN a
+  // IMPORTANT: avoid full label scans with rand(); sample by internal id.
+  WITH toInteger($max_node_id) AS maxId
+  UNWIND range(1, {anchor_pool} * 10) AS i
+  WITH maxId, toInteger(rand() * (maxId + 1)) AS rid
+  MATCH (x{lbl})
+  WHERE id(x) = rid
+  WITH DISTINCT x
   LIMIT {anchor_pool}
+  WITH x, COUNT {{ (x)--() }} AS deg
+  WHERE {deg_min} <= deg AND deg <= {deg_max}
+  RETURN x
 }}
 
-MATCH (a)-[r]-(x{lbl})
-WITH a,
-     type(r) AS rel,
-     count(DISTINCT x) AS answer_count,
-     collect(DISTINCT x)[0..{max_answers}] AS answers
+// 2) Pick one random neighbor anchor a and relation r for each x
+CALL {{
+  WITH x
+  MATCH (a{lbl})-[r]-(x)
+  WITH a, r
+  ORDER BY rand()
+  LIMIT 1
+  RETURN a, r
+}}
+
+// 3) Validate answer set size for (a, rel)
+CALL {{
+  WITH a, r
+  MATCH (a)-[vr]-(vx{lbl})
+  WHERE type(vr) = type(r)
+  WITH collect(DISTINCT vx)[0..{max_answers + 1}] AS answers
+  RETURN answers, size(answers) AS answer_count
+}}
+WITH a, r, answers, answer_count
 WHERE answer_count >= {min_answers} AND answer_count <= {max_answers}
 
 RETURN
   elementId(a) AS anchor_id,
   a.name       AS anchor_name,
   coalesce(a.type, labels(a)) AS anchor_types,
-  rel          AS rel_type,
+  type(r)      AS rel_type,
   answer_count,
   [n IN answers | elementId(n)] AS answer_ids_sample,
   [n IN answers | {{id: elementId(n), name: n.name, types: coalesce(n.type, labels(n))}}] AS answer_nodes_sample
@@ -112,34 +133,85 @@ def build_two_hop_chain_cypher(
 ) -> str:
     lbl = f":{node_label}" if node_label else ""
     return f"""
+// Reverse lookup (answer-first) for 2-hop: a -[r1]- z -[r2]- x
+// 1) Sample candidate answers x (degree-constrained to avoid hubs)
 CALL {{
-  MATCH (a{lbl})
-  WITH a, COUNT {{ (a)--() }} AS deg
-  WHERE {deg_min} <= deg AND deg <= {deg_max}
-    AND rand() < {anchor_keep_prob}
-  RETURN a
+  // IMPORTANT: avoid full label scans with rand(); sample by internal id.
+  WITH toInteger($max_node_id) AS maxId
+  UNWIND range(1, {anchor_pool} * 10) AS i
+  WITH maxId, toInteger(rand() * (maxId + 1)) AS rid
+  MATCH (x{lbl})
+  WHERE id(x) = rid
+  WITH DISTINCT x
   LIMIT {anchor_pool}
+  WITH x, COUNT {{ (x)--() }} AS deg
+  WHERE {deg_min} <= deg AND deg <= {deg_max}
+  RETURN x
 }}
 
-MATCH (a)-[r1]-(z{lbl})-[r2]-(x{lbl})
-WHERE a <> z AND z <> x AND a <> x
+// 2) From each x, pick one random (z, r2, a, r1) path backwards.
+//    IMPORTANT: avoid scanning/ordering large neighbor sets.
+//    We use a small retry loop: repeatedly sample a random neighbor, then
+//    keep it only if it satisfies degree constraints.
+CALL {{
+  WITH x
 
-WITH a,
-     type(r1) AS rel1,
-     type(r2) AS rel2,
-     count(DISTINCT x) AS answer_count,
-     collect(DISTINCT x)[0..{max_answers}] AS answers,
-     collect(DISTINCT z)[0..{max_answers}] AS mid_nodes
+  // 2-a) pick z among neighbors of x (bounded retries)
+  CALL {{
+    WITH x
+    UNWIND range(1, 20) AS i
+    MATCH (x)-[r2]-(z{lbl})
+    WHERE x <> z
+    WITH x, z, r2
+    ORDER BY rand()
+    LIMIT 1
+    WITH x, z, r2, COUNT {{ (z)--() }} AS zdeg
+    WHERE {deg_min} <= zdeg AND zdeg <= {deg_max}
+    RETURN x AS x2, z, r2
+    LIMIT 1
+  }}
+
+  // 2-b) pick a among neighbors of z (bounded retries)
+  CALL {{
+    WITH x2, z, r2
+    UNWIND range(1, 20) AS j
+    MATCH (z)-[r1]-(a{lbl})
+    WHERE a <> z AND a <> x2
+    WITH a, r1
+    ORDER BY rand()
+    LIMIT 1
+    WITH a, r1, COUNT {{ (a)--() }} AS adeg
+    WHERE {deg_min} <= adeg AND adeg <= {deg_max}
+    RETURN a, r1
+    LIMIT 1
+  }}
+
+  RETURN a, z, r1, r2
+}}
+
+// 3) Validate answer set size for (a, rel1, rel2)
+CALL {{
+  WITH a, r1, r2
+  MATCH (a)-[vr1]-(vz{lbl})-[vr2]-(vx{lbl})
+  WHERE type(vr1) = type(r1) AND type(vr2) = type(r2)
+    AND a <> vz AND vz <> vx AND a <> vx
+  WITH DISTINCT vx
+  LIMIT {max_answers + 1}
+  WITH collect(vx) AS answers
+  RETURN answers, size(answers) AS answer_count
+}}
+WITH a, z, r1, r2, answers, answer_count
 WHERE answer_count >= {min_answers} AND answer_count <= {max_answers}
 
 RETURN
   elementId(a) AS anchor_id,
   a.name       AS anchor_name,
   coalesce(a.type, labels(a)) AS anchor_types,
-  rel1, rel2,
+  type(r1)     AS rel1,
+  type(r2)     AS rel2,
   answer_count,
-  [n IN mid_nodes | elementId(n)] AS mid_ids_sample,
-  [n IN mid_nodes | {{id: elementId(n), name: n.name, types: coalesce(n.type, labels(n))}}] AS mid_nodes_sample,
+  [elementId(z)] AS mid_ids_sample,
+  [{{id: elementId(z), name: z.name, types: coalesce(z.type, labels(z))}}] AS mid_nodes_sample,
   [n IN answers | elementId(n)] AS answer_ids_sample,
   [n IN answers | {{id: elementId(n), name: n.name, types: coalesce(n.type, labels(n))}}] AS answer_nodes_sample
 LIMIT {limit};
@@ -215,46 +287,42 @@ def build_two_anchor_intersection_cypher(
 ) -> str:
     lbl = f":{node_label}" if node_label else ""
     return f"""
-// 共通点になりうるノード x を先に集める（degree帯で絞る）
+// Middle-out optimized 2-anchor intersection
+// 1) Sample center nodes x with degree constraints to avoid hubs
 CALL {{
+  // IMPORTANT: avoid full label scans with rand(); sample by internal id.
+  WITH toInteger($max_node_id) AS maxId
+  UNWIND range(1, {anchor_pool} * 10) AS i
+  WITH maxId, toInteger(rand() * (maxId + 1)) AS rid
   MATCH (x{lbl})
+  WHERE id(x) = rid
+  WITH DISTINCT x
+  LIMIT {anchor_pool}
   WITH x, COUNT {{ (x)--() }} AS deg
   WHERE {deg_min} <= deg AND deg <= {deg_max}
-    AND rand() < {anchor_keep_prob}
   RETURN x
-  LIMIT {anchor_pool}
 }}
 
-WITH collect(x) AS xs
-WHERE size(xs) >= 1
-
-UNWIND range(1, {num_tries}) AS i
-WITH xs,
-     xs[toInteger(rand() * size(xs))] AS x
-WHERE x IS NOT NULL
-
-// x の近傍からランダムに2つのアンカー a,b を引く（関係タイプは問わない）
+// 2) For each x, pick two random neighbors a,b (x is guaranteed to be a common answer)
 CALL {{
   WITH x
   MATCH (x)-[ra]-(a{lbl})
-  RETURN a, ra
+  WITH x, a, ra
   ORDER BY rand()
   LIMIT 2
+  RETURN collect({{a:a, ra:ra}}) AS picks
 }}
-WITH x, collect({{a:a, ra:ra}}) AS picks
+WITH x, picks
 WHERE size(picks) = 2 AND elementId(picks[0].a) <> elementId(picks[1].a)
 
 WITH picks[0].a AS a, picks[1].a AS b,
-     type(picks[0].ra) AS relA,
-     type(picks[1].ra) AS relB
+     picks[0].ra AS ra, picks[1].ra AS rb
 
-// a と b の共通近傍集合（ラベル・関係タイプともに自由）
-MATCH (a)-[rA]-(y{lbl})
-MATCH (b)-[rB]-(y{lbl})
-
-WITH a, b, relA, relB,
-     count(DISTINCT y) AS answer_count,
-     collect(DISTINCT y)[0..{max_answers}] AS answers
+// 3) Validate answer set size for (a,b). Use capped collect to early-stop when too large.
+MATCH (a)-[rA]-(y{lbl}), (b)-[rB]-(y{lbl})
+WITH a, b, ra, rb,
+     collect(DISTINCT y)[0..{max_answers + 1}] AS answers
+WITH a, b, ra, rb, answers, size(answers) AS answer_count
 WHERE answer_count >= {min_answers} AND answer_count <= {max_answers}
 
 RETURN
@@ -264,8 +332,8 @@ RETURN
   elementId(b) AS anchorB_id,
   b.name       AS anchorB_name,
   coalesce(b.type, labels(b)) AS anchorB_types,
-  relA         AS anchorA_edge_type,
-  relB         AS anchorB_edge_type,
+  type(ra)     AS anchorA_edge_type,
+  type(rb)     AS anchorB_edge_type,
   answer_count,
   [n IN answers | elementId(n)] AS answer_ids_sample,
   [n IN answers | {{id: elementId(n), name: n.name, types: coalesce(n.type, labels(n))}}] AS answer_nodes_sample
@@ -346,48 +414,74 @@ def build_three_anchor_intersection_cypher(
 ) -> str:
     lbl = f":{node_label}" if node_label else ""
     return f"""
+// Middle-out optimized 3-anchor intersection
 CALL {{
+  // IMPORTANT: avoid full label scans with rand(); sample by internal id.
+  WITH toInteger($max_node_id) AS maxId
+  UNWIND range(1, {anchor_pool} * 10) AS i
+  WITH maxId, toInteger(rand() * (maxId + 1)) AS rid
   MATCH (x{lbl})
+  WHERE id(x) = rid
+  WITH DISTINCT x
+  LIMIT {anchor_pool}
   WITH x, COUNT {{ (x)--() }} AS deg
   WHERE {deg_min} <= deg AND deg <= {deg_max}
-    AND rand() < {anchor_keep_prob}
   RETURN x
-  LIMIT {anchor_pool}
 }}
 
-WITH collect(x) AS xs
-WHERE size(xs) >= 1
-
-UNWIND range(1, {num_tries}) AS i
-WITH xs,
-     xs[toInteger(rand() * size(xs))] AS x
-WHERE x IS NOT NULL
-
+// 2) Pick three distinct neighbors a,b,c of x without scanning huge neighbor sets.
+//    We use bounded retry loops and degree constraints to avoid hubs.
 CALL {{
   WITH x
+  UNWIND range(1, 30) AS i
   MATCH (x)-[ra]-(a{lbl})
-  RETURN a, ra
+  WHERE a <> x
+  WITH a, ra
   ORDER BY rand()
-  LIMIT 3
+  LIMIT 1
+  WITH a, ra, COUNT {{ (a)--() }} AS adeg
+  WHERE {deg_min} <= adeg AND adeg <= {deg_max}
+  RETURN a, ra
+  LIMIT 1
 }}
-WITH x, collect({{a:a, ra:ra}}) AS picks
-WHERE size(picks) = 3
-  AND elementId(picks[0].a) <> elementId(picks[1].a)
-  AND elementId(picks[0].a) <> elementId(picks[2].a)
-  AND elementId(picks[1].a) <> elementId(picks[2].a)
+CALL {{
+  WITH x, a
+  UNWIND range(1, 30) AS j
+  MATCH (x)-[rb]-(b{lbl})
+  WHERE b <> x AND b <> a
+  WITH b, rb
+  ORDER BY rand()
+  LIMIT 1
+  WITH b, rb, COUNT {{ (b)--() }} AS bdeg
+  WHERE {deg_min} <= bdeg AND bdeg <= {deg_max}
+  RETURN b, rb
+  LIMIT 1
+}}
+CALL {{
+  WITH x, a, b
+  UNWIND range(1, 30) AS k
+  MATCH (x)-[rc]-(c{lbl})
+  WHERE c <> x AND c <> a AND c <> b
+  WITH c, rc
+  ORDER BY rand()
+  LIMIT 1
+  WITH c, rc, COUNT {{ (c)--() }} AS cdeg
+  WHERE {deg_min} <= cdeg AND cdeg <= {deg_max}
+  RETURN c, rc
+  LIMIT 1
+}}
 
-WITH picks[0].a AS a, picks[1].a AS b, picks[2].a AS c,
-     type(picks[0].ra) AS relA,
-     type(picks[1].ra) AS relB,
-     type(picks[2].ra) AS relC
-
+// 3) Validate answer set size for (a,b,c).
+//    Intersect stepwise and early-stop when too large.
 MATCH (a)-[r1]-(y{lbl})
+WITH a, b, c, ra, rb, rc, y
 MATCH (b)-[r2]-(y{lbl})
+WITH a, b, c, ra, rb, rc, y
 MATCH (c)-[r3]-(y{lbl})
-
-WITH a, b, c, relA, relB, relC,
-     count(DISTINCT y) AS answer_count,
-     collect(DISTINCT y)[0..{max_answers}] AS answers
+WITH DISTINCT a, b, c, ra, rb, rc, y
+LIMIT {max_answers + 1}
+WITH a, b, c, ra, rb, rc, collect(y) AS answers
+WITH a, b, c, ra, rb, rc, answers, size(answers) AS answer_count
 WHERE answer_count >= {min_answers} AND answer_count <= {max_answers}
 
 RETURN
@@ -400,9 +494,9 @@ RETURN
   elementId(c) AS anchorC_id,
   c.name       AS anchorC_name,
   coalesce(c.type, labels(c)) AS anchorC_types,
-  relA         AS anchorA_edge_type,
-  relB         AS anchorB_edge_type,
-  relC         AS anchorC_edge_type,
+  type(ra)     AS anchorA_edge_type,
+  type(rb)     AS anchorB_edge_type,
+  type(rc)     AS anchorC_edge_type,
   answer_count,
   [n IN answers | elementId(n)] AS answer_ids_sample,
   [n IN answers | {{id: elementId(n), name: n.name, types: coalesce(n.type, labels(n))}}] AS answer_nodes_sample
@@ -425,19 +519,20 @@ theree_anchor_intersection_cypher = build_three_anchor_intersection_cypher()
 
 simple_one_hop_chain_cypher = """
 CALL {
-  MATCH (a)
+  // Answer-first sampling
+  MATCH (x)
   WHERE rand() < $keep_prob
-  RETURN a
+  RETURN x
   LIMIT $anchor_pool
 }
-WITH collect(a) AS anchors
-WHERE size(anchors) > 0
+WITH collect(x) AS answers
+WHERE size(answers) > 0
 UNWIND range(1, $limit) AS i
-WITH anchors, apoc.coll.randomItem(anchors) AS a
+WITH answers, apoc.coll.randomItem(answers) AS x
 CALL {
-  WITH a
+  WITH x
   MATCH (a)-[r]-(x)
-  RETURN r, x
+  RETURN a, r
   ORDER BY rand()
   LIMIT 1
 }
@@ -454,27 +549,28 @@ RETURN
 
 simple_two_hop_chain_cypher = """
 CALL {
-  MATCH (a)
+  // Answer-first sampling
+  MATCH (x)
   WHERE rand() < $keep_prob
-  RETURN a
+  RETURN x
   LIMIT $anchor_pool
 }
-WITH collect(a) AS anchors
-WHERE size(anchors) > 0
+WITH collect(x) AS answers
+WHERE size(answers) > 0
 UNWIND range(1, $limit) AS i
-WITH anchors, apoc.coll.randomItem(anchors) AS a
+WITH answers, apoc.coll.randomItem(answers) AS x
 CALL {
-  WITH a
-  MATCH (a)-[r1]-(z)
-  RETURN r1, z
+  WITH x
+  MATCH (x)-[r2]-(z)
+  RETURN r2, z
   ORDER BY rand()
   LIMIT 1
 }
 CALL {
-  WITH a, z
-  MATCH (z)-[r2]-(x)
-  WHERE x <> a
-  RETURN r2, x
+  WITH x, z
+  MATCH (z)-[r1]-(a)
+  WHERE a <> x
+  RETURN r1, a
   ORDER BY rand()
   LIMIT 1
 }
@@ -494,24 +590,25 @@ RETURN
 
 simple_two_anchor_intersection_cypher = """
 CALL {
-  MATCH (a)
+  // Middle-out: sample center y first
+  MATCH (y)
   WHERE rand() < $keep_prob
-  RETURN a
+  RETURN y
   LIMIT $anchor_pool
 }
-WITH collect(a) AS anchors
-WHERE size(anchors) > 0
+WITH collect(y) AS centers
+WHERE size(centers) > 0
 UNWIND range(1, $limit) AS i
-WITH anchors, apoc.coll.randomItem(anchors) AS a
+WITH centers, apoc.coll.randomItem(centers) AS y
 CALL {
-  WITH a
-  MATCH (a)-[ra]-(y)
-  RETURN ra, y
+  WITH y
+  MATCH (y)-[ra]-(a)
+  RETURN ra, a
   ORDER BY rand()
   LIMIT 1
 }
 CALL {
-  WITH a, y
+  WITH y, a
   MATCH (y)-[rb]-(b)
   WHERE b <> a
   RETURN rb, b
@@ -535,24 +632,25 @@ RETURN
 
 simple_three_anchor_intersection_cypher = """
 CALL {
-  MATCH (a)
+  // Middle-out: sample center y first
+  MATCH (y)
   WHERE rand() < $keep_prob
-  RETURN a
+  RETURN y
   LIMIT $anchor_pool
 }
-WITH collect(a) AS anchors
-WHERE size(anchors) > 0
+WITH collect(y) AS centers
+WHERE size(centers) > 0
 UNWIND range(1, $limit) AS i
-WITH anchors, apoc.coll.randomItem(anchors) AS a
+WITH centers, apoc.coll.randomItem(centers) AS y
 CALL {
-  WITH a
-  MATCH (a)-[r1]-(y)
-  RETURN r1, y
+  WITH y
+  MATCH (y)-[r1]-(a)
+  RETURN r1, a
   ORDER BY rand()
   LIMIT 1
 }
 CALL {
-  WITH a, y
+  WITH y, a
   MATCH (y)-[r2]-(b)
   WHERE b <> a
   RETURN r2, b
@@ -560,7 +658,7 @@ CALL {
   LIMIT 1
 }
 CALL {
-  WITH a, y, b
+  WITH y, a, b
   MATCH (y)-[r3]-(c)
   WHERE c <> a AND c <> b
   RETURN r3, c

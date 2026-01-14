@@ -21,3 +21,31 @@
 1. app/overall_test.pyにテスト用コードが載っているので参照
 2. パイプラインについてのコードはapp/pipeline/graph_pipeline.pyに記載
 
+
+
+# 既存のDBを上書きする場合 (DockerやLinux環境の例)
+neo4j-admin database import full \
+  --nodes=/var/lib/neo4j/data/kg/nodes.csv \
+  --relationships=/var/lib/neo4j/data/kg/relationships.csv \
+  --delimiter=, \
+  --array-delimiter=";" \
+  --overwrite-destination=true \
+  neo4j
+
+  docker compose run --rm --entrypoint="" neo4j ls -la /import
+
+
+
+python - <<'PY'
+import json
+from pathlib import Path
+p=Path('/tmp/with_kopl_sample.jsonl')
+with p.open() as f:
+    row=json.loads(next(f))
+print('query_type',row.get('query_type'))
+print('kopl_strict',row.get('kopl_strict')[:300])
+print('kopl_type',row.get('kopl_type')[:300])
+print('kopl_strict_struct_len',len(row.get('kopl_strict_struct',[])))
+print('kopl_type_struct_len',len(row.get('kopl_type_struct',[])))
+PY
+

@@ -186,5 +186,5 @@ if __name__ == "__main__":
 
 # 使用方法
 """
-docker compose run --rm app python dataset_construction/run_all.py --limit-per-query 100000 --sample-size 15000 --train 10000 --val 2500 --test 2500 --simple
+docker compose run --rm app python dataset_construction/run_all.py --limit-per-query 100000 --sample-size 15000 --train 10000 --val 2500 --test 2500 --generate-out-dir /app/result/dataset_construction_v2 --splits-out-dir /app/result/dataset_splits_v2 
 """

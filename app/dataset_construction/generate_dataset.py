@@ -207,6 +207,15 @@ def run_queries_and_save(
     with driver.session() as session:
         resolved_label = resolve_node_label(session)
 
+        # Used by optimized Cypher sampling: random internal-id lookups.
+        # This avoids full label scans with rand() for large graphs.
+        lbl = f":{resolved_label}" if resolved_label else ""
+        rec = session.run(f"MATCH (n{lbl}) RETURN max(id(n)) AS max_id").single()
+        max_node_id = rec and rec.get("max_id")
+        if max_node_id is None:
+            raise SystemExit("Neo4j returned null max(id(n)); graph may be empty")
+        max_node_id = int(max_node_id)
+
         for spec in specs:
             pbar = tqdm(
                 total=limit_per_query,
@@ -277,7 +286,7 @@ def run_queries_and_save(
                         anchor_pool=2000,
                     )
                 else:
-                    result = session.run(cypher)
+                    result = session.run(cypher, max_node_id=max_node_id)
                 batch = [record.data() for record in result]
                 if not batch:
                     if not simple:
