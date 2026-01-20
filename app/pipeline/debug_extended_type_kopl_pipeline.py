@@ -1,9 +1,9 @@
 """
-KGT Pipeline デバッグスクリプト
+Extended Type-KoPL Pipeline デバッグスクリプト
 
 使用方法:
-  python pipeline/debug_kgt_pipeline.py --data result/dataset_v2/two_hop.jsonl --index 0
-  python pipeline/debug_kgt_pipeline.py --question "What diseases are associated with BRCA1?"
+  python pipeline/debug_extended_type_kopl_pipeline.py --data result/dataset_v2/two_hop.jsonl --index 0
+  python pipeline/debug_extended_type_kopl_pipeline.py --question "What diseases are associated with BRCA1?" --entity "BRCA1"
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pipeline.kgt_pipeline import KGTPipeline, KGTResult
+from pipeline.extended_type_kopl_pipeline import (
+    ExtendedTypeKoPLPipeline,
+    ExtendedTypeKoPLResult,
+    OperationType,
+)
 
 
 def load_samples(data_path: Path, indices: List[int]) -> List[tuple]:
@@ -40,19 +44,24 @@ def get_gold_info(sample: Dict[str, Any]) -> Dict[str, Any]:
     if "anchor_c_name" in sample:
         query_type = "three_intersection"
         relations = [sample.get("anchor_a_rel"), sample.get("anchor_b_rel"), sample.get("anchor_c_rel")]
+        anchors = [sample.get("anchor_a_name"), sample.get("anchor_b_name"), sample.get("anchor_c_name")]
     elif "anchor_b_name" in sample:
         query_type = "two_intersection"
         relations = [sample.get("anchor_a_rel"), sample.get("anchor_b_rel")]
+        anchors = [sample.get("anchor_a_name"), sample.get("anchor_b_name")]
     elif "rel2" in sample:
         query_type = "two_hop"
         relations = [sample.get("rel1"), sample.get("rel2")]
+        anchors = [sample.get("anchor_name")]
     else:
         query_type = "one_hop"
         relations = [sample.get("relation")]
+        anchors = [sample.get("anchor_name")]
 
     return {
         "query_type": query_type,
         "relations": [r for r in relations if r],
+        "anchors": [a for a in anchors if a],
         "answers": gold_answers,
     }
 
@@ -60,7 +69,7 @@ def get_gold_info(sample: Dict[str, Any]) -> Dict[str, Any]:
 def run_debug(
     question: str,
     entity_name: Optional[str],
-    pipeline: KGTPipeline,
+    pipeline: ExtendedTypeKoPLPipeline,
     gold_info: Optional[Dict[str, Any]] = None,
     verbose: bool = True,
 ) -> Dict[str, Any]:
@@ -86,52 +95,57 @@ def run_debug(
             print(f"  {line}")
 
         print("\n" + "=" * 60)
-        print("ANALYSIS")
+        print("KOPL PROGRAM")
         print("=" * 60)
-        print(f"  Head Entity: {result.analysis.head_entity_name}")
-        print(f"  Head Type: {result.analysis.head_entity_type}")
-        print(f"  Tail Type: {result.analysis.tail_entity_type}")
-
-        print("\n" + "=" * 60)
-        print("SCHEMA PATHS")
-        print("=" * 60)
-        print(f"  Total candidates: {len(result.schema_paths)}")
-        for i, p in enumerate(result.schema_paths[:5]):
-            print(f"    {i+1}. {p.path} (score: {p.score:.3f})")
-
-        if result.optimal_path:
-            print(f"\n  Optimal: {result.optimal_path.path}")
-            print(f"  Relations: {result.optimal_path.relations}")
-
-        print("\n" + "=" * 60)
-        print("CYPHER QUERY")
-        print("=" * 60)
-        if result.generated_cypher:
-            print(f"  {result.generated_cypher}")
+        if result.kopl_program:
+            print(f"  Operation: {result.kopl_program.op_type}")
+            print(f"  Anchor: {result.kopl_program.anchor_name}")
+            if result.kopl_program.relations:
+                for rel in result.kopl_program.relations:
+                    print(f"    Relation: {rel.src_type} -> {rel.tgt_type}")
+                    if rel.intermediate_type:
+                        print(f"      via: {rel.intermediate_type}")
+            if result.kopl_program.children:
+                print(f"  Children ({len(result.kopl_program.children)}):")
+                for i, child in enumerate(result.kopl_program.children):
+                    print(f"    [{i+1}] {child.op_type}: {child.anchor_name}")
+                    for rel in child.relations:
+                        print(f"        {rel.src_type} -> {rel.tgt_type}")
         else:
             print("  (none)")
 
         print("\n" + "=" * 60)
-        print("SUBGRAPH")
+        print("CANDIDATE PATHS")
         print("=" * 60)
-        print(f"  Results: {len(result.subgraph)}")
-        if result.subgraph:
-            for i, r in enumerate(result.subgraph[:5]):
-                print(f"    {i+1}. {r}")
+        print(f"  Total: {len(result.candidate_paths)}")
+        for i, p in enumerate(result.candidate_paths[:10]):
+            print(f"  [{p.source}] {p.to_text()}")
+
+        print("\n" + "=" * 60)
+        print("SELECTED PATHS (after pruning)")
+        print("=" * 60)
+        for p in result.selected_paths:
+            print(f"  {p.to_text()} (score: {p.score:.4f})")
+
+        print("\n" + "=" * 60)
+        print("ENTITY SETS")
+        print("=" * 60)
+        for i, es in enumerate(result.entity_sets):
+            print(f"  [{i+1}] {len(es.entities)} entities (anchor: {es.anchor_name})")
+            if es.source_path:
+                print(f"      Path: {es.source_path.to_text()}")
+            print(f"      Sample: {list(es.entities)[:5]}")
 
         print("\n" + "=" * 60)
         print("ANSWERS")
         print("=" * 60)
         print(f"  Entities ({len(result.answer_entities)}): {result.answer_entities[:10]}")
-        if result.natural_answer:
-            print(f"  Natural: {result.natural_answer}")
 
     # 評価（集合ベース）
     accuracy = False
     recall = 0.0
     precision = 0.0
     f1 = 0.0
-    path_match = False
 
     if gold_info:
         gold_set = set(gold_info["answers"])
@@ -145,9 +159,6 @@ def run_debug(
         if precision + recall > 0:
             f1 = 2 * precision * recall / (precision + recall)
 
-        if result.optimal_path:
-            path_match = any(r in result.optimal_path.relations for r in gold_info["relations"])
-
         if verbose:
             print("\n" + "=" * 60)
             print("EVALUATION")
@@ -156,9 +167,7 @@ def run_debug(
             print(f"  Recall:    {recall:.3f}")
             print(f"  Precision: {precision:.3f}")
             print(f"  F1:        {f1:.3f}")
-            print(f"  PathMatch: {path_match}")
             print(f"  Gold Relations: {gold_info['relations']}")
-            print(f"  Pred Relations: {result.optimal_path.relations if result.optimal_path else []}")
 
             if overlap:
                 print(f"\n  Correct predictions: {list(overlap)[:5]}")
@@ -169,20 +178,20 @@ def run_debug(
     return {
         "question": question,
         "entity_name": entity_name,
-        "head_type": result.analysis.head_entity_type,
-        "tail_type": result.analysis.tail_entity_type,
-        "optimal_path": result.optimal_path.relations if result.optimal_path else None,
+        "kopl_op": result.kopl_program.op_type.value if result.kopl_program else None,
+        "num_candidate_paths": len(result.candidate_paths),
+        "num_selected_paths": len(result.selected_paths),
+        "num_entity_sets": len(result.entity_sets),
         "answer_entities": result.answer_entities,
         "accuracy": accuracy,
         "recall": recall,
         "precision": precision,
         "f1": f1,
-        "path_match": path_match,
     }
 
 
 def main():
-    p = argparse.ArgumentParser(description="Debug KGT Pipeline")
+    p = argparse.ArgumentParser(description="Debug Extended Type-KoPL Pipeline")
     p.add_argument("--data", type=Path, help="JSONL data file")
     p.add_argument("--index", type=int, nargs="+", default=[0], help="Sample index(es)")
     p.add_argument("--question", type=str, help="Direct question input")
@@ -190,8 +199,8 @@ def main():
     p.add_argument("--quiet", "-q", action="store_true", help="Show only summary")
     args = p.parse_args()
 
-    print("Initializing KGT Pipeline...")
-    pipeline = KGTPipeline()
+    print("Initializing Extended Type-KoPL Pipeline...")
+    pipeline = ExtendedTypeKoPLPipeline()
 
     if args.question:
         # 直接質問入力
@@ -227,16 +236,17 @@ def main():
             avg_recall = sum(r.get("recall", 0) for r in results) / total
             avg_f1 = sum(r.get("f1", 0) for r in results) / total
 
-            print(f"{'Index':<8} {'Acc':<6} {'Recall':<8} {'F1':<8} {'Path':<25}")
-            print("-" * 60)
+            print(f"{'Index':<8} {'Acc':<6} {'Recall':<8} {'F1':<8} {'KoPL Op':<15} {'#Answers':<10}")
+            print("-" * 70)
             for r in results:
-                path_str = "->".join(r.get("optimal_path") or ["None"])[:23]
                 acc = "Y" if r.get("accuracy") else "N"
                 rec = f"{r.get('recall', 0):.2f}"
                 f1_val = f"{r.get('f1', 0):.2f}"
-                print(f"{r['index']:<8} {acc:<6} {rec:<8} {f1_val:<8} {path_str:<25}")
+                op = r.get("kopl_op", "N/A")
+                n_ans = len(r.get("answer_entities", []))
+                print(f"{r['index']:<8} {acc:<6} {rec:<8} {f1_val:<8} {op:<15} {n_ans:<10}")
 
-            print("-" * 60)
+            print("-" * 70)
             print(f"Total: Acc={acc_count}/{total} ({acc_count/total*100:.1f}%), Recall={avg_recall*100:.1f}%, F1={avg_f1*100:.1f}%")
     else:
         print("Please specify --data or --question")

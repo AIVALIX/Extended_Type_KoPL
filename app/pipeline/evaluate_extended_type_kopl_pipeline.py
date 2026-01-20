@@ -1,16 +1,13 @@
 """
-SAFE Pipeline 評価スクリプト
+Extended Type-KoPL Pipeline 評価スクリプト
 
 使用方法:
-  python pipeline/evaluate_safe_pipeline.py --num-samples 20
-  python pipeline/evaluate_safe_pipeline.py --dataset one_hop two_hop --num-samples 50
+  python pipeline/evaluate_extended_type_kopl_pipeline.py --num-samples 20
+  python pipeline/evaluate_extended_type_kopl_pipeline.py --dataset one_hop two_hop --num-samples 50
 
 出力:
   - result/pipeline_outputs/ ディレクトリにJSONL形式で結果を保存
   - 精度算出は evaluate_all_results.py で一括して行う
-
-注意:
-  - SAFEはintersectionクエリに対応していないため、one_hop/two_hopのみ評価
 """
 
 from __future__ import annotations
@@ -23,11 +20,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
-from pipeline.safe_pipeline import SAFEPipeline, SAFEResult
+from pipeline.extended_type_kopl_pipeline import ExtendedTypeKoPLPipeline, ExtendedTypeKoPLResult
 from pipeline.eval_metrics import PipelineOutput, save_pipeline_outputs
 
 
-# データセット設定（SAFEはintersectionに非対応）
+# データセット設定
 DATASETS_V2 = {
     "one_hop": {
         "path": "result/dataset_v2/one_hop.jsonl",
@@ -41,23 +38,36 @@ DATASETS_V2 = {
         "gold_relations_keys": ["rel1", "rel2"],
         "gold_answers_key": "answer_nodes",
     },
+    "two_intersection": {
+        "path": "result/dataset_v2/two_intersection.jsonl",
+        "entity_key": "anchor_a_name",
+        "gold_relations_keys": ["anchor_a_rel", "anchor_b_rel"],
+        "gold_answers_key": "answer_nodes",
+        "extra_entity_key": "anchor_b_name",
+    },
+    "three_intersection": {
+        "path": "result/dataset_v2/three_intersection.jsonl",
+        "entity_key": "anchor_a_name",
+        "gold_relations_keys": ["anchor_a_rel", "anchor_b_rel", "anchor_c_rel"],
+        "gold_answers_key": "answer_nodes",
+        "extra_entity_keys": ["anchor_b_name", "anchor_c_name"],
+    },
 }
 
 
-def extract_relations_from_query_graph(best_query_graph) -> Optional[List[str]]:
-    """最良クエリグラフからリレーションを抽出"""
-    if not best_query_graph:
+def extract_relations_from_paths(selected_paths) -> Optional[List[str]]:
+    """選択されたパスからリレーションを抽出"""
+    if not selected_paths:
         return None
-    relations = []
-    for schema_edge, _ in best_query_graph.edges:
-        relations.append(schema_edge.relation)
-    return relations if relations else None
+    # 最もスコアの高いパスのリレーションを使用
+    best_path = selected_paths[0]
+    return list(best_path.relations) if best_path.relations else None
 
 
 def run_sample(
     idx: int,
     sample: Dict[str, Any],
-    pipeline: SAFEPipeline,
+    pipeline: ExtendedTypeKoPLPipeline,
     dataset_config: Dict[str, Any],
 ) -> PipelineOutput:
     """単一サンプルを実行"""
@@ -84,14 +94,14 @@ def run_sample(
 
     try:
         start = time.time()
-        safe_result = pipeline.run(question=question, entity_name=entity_name)
+        pipeline_result = pipeline.run(question=question, entity_name=entity_name)
         output.latency_ms = (time.time() - start) * 1000
 
         # 予測リレーション
-        output.predicted_relations = extract_relations_from_query_graph(safe_result.best_query_graph)
+        output.predicted_relations = extract_relations_from_paths(pipeline_result.selected_paths)
 
         # 予測エンティティ
-        output.predicted_entities = safe_result.answer_entities
+        output.predicted_entities = pipeline_result.answer_entities
 
     except Exception as e:
         output.error = str(e)
@@ -124,7 +134,7 @@ def run_pipeline(
     print(f"  Loaded {len(samples)} samples")
 
     # パイプライン作成
-    pipeline = SAFEPipeline()
+    pipeline = ExtendedTypeKoPLPipeline()
 
     outputs: List[PipelineOutput] = []
 
@@ -137,7 +147,7 @@ def run_pipeline(
 
 
 def main():
-    p = argparse.ArgumentParser(description="Run SAFE Pipeline")
+    p = argparse.ArgumentParser(description="Run Extended Type-KoPL Pipeline")
     p.add_argument("--dataset", type=str, nargs="+",
                    choices=list(DATASETS_V2.keys()),
                    help="Specific dataset(s) to run (default: all)")
@@ -154,7 +164,7 @@ def main():
             continue
 
         print(f"\n{'='*60}")
-        print(f"Running SAFE: {ds_name}")
+        print(f"Running Extended Type-KoPL: {ds_name}")
         print(f"{'='*60}")
 
         ds_config = DATASETS_V2[ds_name]
@@ -168,12 +178,12 @@ def main():
             save_pipeline_outputs(
                 outputs,
                 args.output_dir,
-                "safe",
+                "extended_type_kopl",
                 ds_name,
             )
             errors = sum(1 for o in outputs if o.error)
             print(f"  Saved {len(outputs)} outputs ({errors} errors)")
-            print(f"  -> {args.output_dir}/safe_{ds_name}.jsonl")
+            print(f"  -> {args.output_dir}/extended_type_kopl_{ds_name}.jsonl")
 
 
 if __name__ == "__main__":

@@ -147,12 +147,13 @@ class SchemaGraphWithAPSP:
         for i in range(n):
             dist[i, i] = 0
 
-        # 隣接エッジの距離は1
+        # 隣接エッジの距離は1（自己参照は除く、対角は0を維持）
         for src_type, neighbors in self.adjacency.items():
             src_idx = self.type_to_idx[src_type]
             for tgt_type, _ in neighbors:
                 tgt_idx = self.type_to_idx[tgt_type]
-                dist[src_idx, tgt_idx] = 1
+                if src_idx != tgt_idx:  # 自己参照エッジは距離0を維持
+                    dist[src_idx, tgt_idx] = 1
 
         # Floyd-Warshall
         for k in range(n):
@@ -172,13 +173,13 @@ class SchemaGraphWithAPSP:
         return self.apsp[i, j]
 
     def get_edge_distance(self, edge1: SchemaEdge, edge2: SchemaEdge) -> float:
-        """2つのエッジ間の距離（端点間の最短距離の最小値）"""
-        # edge1のtgt_typeとedge2のsrc_typeの距離を計算
-        d1 = self.get_type_distance(edge1.tgt_type, edge2.src_type)
-        d2 = self.get_type_distance(edge1.src_type, edge2.tgt_type)
-        d3 = self.get_type_distance(edge1.tgt_type, edge2.tgt_type)
-        d4 = self.get_type_distance(edge1.src_type, edge2.src_type)
-        return min(d1, d2, d3, d4)
+        """2つのエッジ間のチェーン接続距離（edge1.tgt → edge2.src）
+
+        チェーン接続のみをチェック:
+        - d1 = 0: 直接接続 (edge1.tgt_type == edge2.src_type)
+        - d1 = 1: 1ノードを介した接続
+        """
+        return self.get_type_distance(edge1.tgt_type, edge2.src_type)
 
     def compute_edge_embeddings(self, embeddings):
         """全エッジの埋め込みを計算"""
@@ -483,7 +484,8 @@ Return JSON with "edges" key containing the list."""
         # スコア順にソート
         matched_subgraphs.sort(key=lambda sg: sg.score)
 
-        return matched_subgraphs[:self.k_retrieval]
+        # 全てのサブグラフを返す（k_retrievalはパス選択のみに使用）
+        return matched_subgraphs
 
     def _intersection_search(
         self,
@@ -502,7 +504,7 @@ Return JSON with "edges" key containing the list."""
 
         for anchor_name, anchor_type, schema_edge in anchors:
             cypher = f"""
-            MATCH (a:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]-(tgt:{get_label(schema_edge.tgt_type)})
+            MATCH (a:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]->(tgt:{get_label(schema_edge.tgt_type)})
             WHERE a.name = $anchor_name
             RETURN DISTINCT tgt.name AS target
             """
@@ -523,9 +525,9 @@ Return JSON with "edges" key containing the list."""
         for _, targets in anchor_targets[1:]:
             common_targets = common_targets & targets
 
-        # 結果を構築
+        # 結果を構築（全ての共通ターゲットを返す）
         results = []
-        for target in list(common_targets)[:self.k_retrieval]:
+        for target in common_targets:
             nodes = {"?": target}
             for anchor_name, _ in anchor_targets:
                 nodes[anchor_name] = anchor_name
@@ -563,40 +565,86 @@ Return JSON with "edges" key containing the list."""
             se1, pe1 = edges[0]
             se2, pe2 = edges[1]
 
-            # Cypherで2ホップパスを構築
-            cypher = f"""
-            MATCH (a:{get_label(se1.src_type)})-[r1:{se1.relation}]-(mid:{get_label(se1.tgt_type)})-[r2:{se2.relation}]-(ans:{get_label(se2.tgt_type)})
-            WHERE a.name = $anchor_name AND a <> mid AND mid <> ans AND a <> ans
-            RETURN DISTINCT
-                a.name AS anchor,
-                type(r1) AS rel1,
-                mid.name AS mid_node,
-                type(r2) AS rel2,
-                ans.name AS answer
-            LIMIT 100
-            """
-
             results = []
-            try:
-                records = graph.run(cypher, anchor_name=anchor_name).data()
 
-                for record in records:
-                    subgraph = MatchedSubgraph(
-                        nodes={
-                            pe1.src_node: record["anchor"],
-                            pe1.tgt_node: record["mid_node"],
-                            pe2.tgt_node: record["answer"],
-                        },
-                        edges=[
-                            (record["anchor"], record["rel1"], record["mid_node"]),
-                            (record["mid_node"], record["rel2"], record["answer"]),
-                        ],
-                        score=0.0,
-                    )
-                    results.append(subgraph)
+            # チェーン接続距離をチェック
+            chain_dist = self.schema.get_edge_distance(se1, se2)
 
-            except Exception as e:
-                print(f"Multi-hop search error: {e}")
+            if chain_dist == 0:
+                # 直接接続: se1.tgt_type == se2.src_type
+                cypher = f"""
+                MATCH (a:{get_label(se1.src_type)})-[r1:{se1.relation}]->(mid:{get_label(se1.tgt_type)})-[r2:{se2.relation}]->(ans:{get_label(se2.tgt_type)})
+                WHERE a.name = $anchor_name AND a <> mid AND mid <> ans AND a <> ans
+                RETURN DISTINCT
+                    a.name AS anchor,
+                    type(r1) AS rel1,
+                    mid.name AS mid_node,
+                    type(r2) AS rel2,
+                    ans.name AS answer
+                LIMIT 100
+                """
+
+                try:
+                    records = graph.run(cypher, anchor_name=anchor_name).data()
+
+                    for record in records:
+                        subgraph = MatchedSubgraph(
+                            nodes={
+                                pe1.src_node: record["anchor"],
+                                pe1.tgt_node: record["mid_node"],
+                                pe2.tgt_node: record["answer"],
+                            },
+                            edges=[
+                                (record["anchor"], record["rel1"], record["mid_node"]),
+                                (record["mid_node"], record["rel2"], record["answer"]),
+                            ],
+                            score=0.0,
+                        )
+                        results.append(subgraph)
+
+                except Exception as e:
+                    print(f"Multi-hop search error (direct): {e}")
+
+            elif chain_dist == 1:
+                # 1ノード介在: se1.tgt_type と se2.src_type の間に1ノード
+                # 中間ノードを含む3ホップCypherを生成
+                cypher = f"""
+                MATCH (a:{get_label(se1.src_type)})-[r1:{se1.relation}]->(mid1:{get_label(se1.tgt_type)})-[r_bridge]-(mid2:{get_label(se2.src_type)})-[r2:{se2.relation}]->(ans:{get_label(se2.tgt_type)})
+                WHERE a.name = $anchor_name
+                    AND a <> mid1 AND mid1 <> mid2 AND mid2 <> ans AND a <> ans
+                RETURN DISTINCT
+                    a.name AS anchor,
+                    type(r1) AS rel1,
+                    mid1.name AS mid1_node,
+                    type(r_bridge) AS rel_bridge,
+                    mid2.name AS mid2_node,
+                    type(r2) AS rel2,
+                    ans.name AS answer
+                LIMIT 100
+                """
+
+                try:
+                    records = graph.run(cypher, anchor_name=anchor_name).data()
+
+                    for record in records:
+                        subgraph = MatchedSubgraph(
+                            nodes={
+                                pe1.src_node: record["anchor"],
+                                pe1.tgt_node: record["mid1_node"],
+                                "bridge": record["mid2_node"],
+                                pe2.tgt_node: record["answer"],
+                            },
+                            edges=[
+                                (record["anchor"], record["rel1"], record["mid1_node"]),
+                                (record["mid1_node"], record["rel_bridge"], record["mid2_node"]),
+                                (record["mid2_node"], record["rel2"], record["answer"]),
+                            ],
+                            score=0.0,
+                        )
+                        results.append(subgraph)
+
+                except Exception as e:
+                    print(f"Multi-hop search error (bridged): {e}")
 
             return results
 
@@ -622,12 +670,12 @@ Return JSON with "edges" key containing the list."""
         # クエリグラフの各エッジについて検索
         for schema_edge, pseudo_edge in query_graph.edges:
             # アンカーがsrc側かtgt側かを判定
-            # 無向グラフなので両方試す
+            # 方向ありで検索（src -> tgt の方向）
             queries = []
 
-            # Case 1: anchor is source
+            # Case 1: anchor is source（順方向）
             cypher1 = f"""
-            MATCH (src:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]-(tgt:{get_label(schema_edge.tgt_type)})
+            MATCH (src:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]->(tgt:{get_label(schema_edge.tgt_type)})
             WHERE src.name = $anchor_name
             RETURN DISTINCT
                 src.name AS src_name,
@@ -637,9 +685,9 @@ Return JSON with "edges" key containing the list."""
             """
             queries.append(("src", cypher1))
 
-            # Case 2: anchor is target
+            # Case 2: anchor is target（逆方向検索）
             cypher2 = f"""
-            MATCH (src:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]-(tgt:{get_label(schema_edge.tgt_type)})
+            MATCH (src:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]->(tgt:{get_label(schema_edge.tgt_type)})
             WHERE tgt.name = $anchor_name
             RETURN DISTINCT
                 src.name AS src_name,

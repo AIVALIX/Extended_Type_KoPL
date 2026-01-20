@@ -216,14 +216,49 @@ def _pattern_description(row: Dict[str, Any]) -> str:
         )
 
     if qt == "two_hop_chain":
+        # 中間ノード情報を抽出
+        mid_nodes = row.get("mid_nodes_sample", [])
+        if mid_nodes and isinstance(mid_nodes, list) and len(mid_nodes) > 0:
+            mid_node = mid_nodes[0]
+            mid_name = mid_node.get("name", "unknown")
+            mid_types = mid_node.get("types", [])
+            mid_types_text = ", ".join(mid_types) if isinstance(mid_types, list) else str(mid_types)
+        else:
+            mid_name = "(unknown intermediate)"
+            mid_types_text = "(unknown)"
+
+        anchor_name = row.get('anchor_name', '')
+        rel1 = row.get('rel1', '')
+        rel2 = row.get('rel2', '')
+
+        # rel2に基づいて適切な質問形式を決定
+        if rel2 == "parent-child":
+            question_verb = "subcategories" if mid_types_text in ["pathway", "biological_process", "molecular_function"] else "subtypes"
+        else:
+            question_verb = f"{rel2} entities"
+
         return (
-            "Pattern: two-hop chain. Find entities x such that (anchor)-[rel1]-(z)-[rel2]-(x).\n"
-            f"anchor_name: {row.get('anchor_name')}\n"
-            f"anchor_types: {row.get('anchor_types')}\n"
-            f"rel1: {row.get('rel1')}\n"
-            f"rel2: {row.get('rel2')}\n"
-            f"answer_types_hint: {ans_types_text}\n"
-            f"answer_count: {row.get('answer_count')}"
+            "Pattern: TWO-HOP CHAIN\n\n"
+            "SIMPLE QUESTION FORMAT REQUIRED:\n"
+            f"  'What are the {question_verb} of {mid_name}, a {rel1} of {anchor_name}?'\n\n"
+            "MUST INCLUDE:\n"
+            f"  1. \"{anchor_name}\" (the starting point)\n"
+            f"  2. \"{mid_name}\" (the intermediate entity)\n"
+            f"  3. Ask for {ans_types_text} (the answers we want)\n\n"
+            "Graph Path:\n"
+            f"  {anchor_name} --({rel1})--> {mid_name} --({rel2})--> [ANSWER]\n\n"
+            "Details:\n"
+            f"  - Anchor: {anchor_name} ({row.get('anchor_types')})\n"
+            f"  - Intermediate: {mid_name} ({mid_types_text})\n"
+            f"  - Answer type: {ans_types_text}\n"
+            f"  - Relations: {rel1}, {rel2}\n\n"
+            "EXAMPLE QUESTIONS (pick a style):\n"
+            f"  1. 'What {ans_types_text} are {rel2} of {mid_name}, itself a {rel1} of {anchor_name}?'\n"
+            f"  2. 'Which {ans_types_text} belong to {mid_name} (a subcategory of {anchor_name})?'\n"
+            f"  3. '{mid_name} is a {rel1} of {anchor_name}. What are its {rel2}?'\n\n"
+            "DO NOT ASK:\n"
+            f"  - 'How does X relate to Y?' or 'What is the relationship between X and Y?'\n"
+            f"  - 'What role does X play in Y?' or 'What is the significance of X?'"
         )
 
     if qt == "two_anchor_intersection":
@@ -274,6 +309,55 @@ class QuestionGenerator:
         self._model = llm.with_structured_output(QuestionResponse)
         self._lang = lang
 
+    def _validate_two_hop_question(self, question: str, row: Dict[str, Any]) -> bool:
+        """two_hop_chainの質問が両方のエンティティを含み、正しい形式かチェック"""
+        # query_typeを推測: rel1/rel2があり、mid_nodes_sampleがあればtwo_hop_chain
+        is_two_hop = (
+            "rel1" in row and "rel2" in row and
+            row.get("mid_nodes_sample") and
+            len(row.get("mid_nodes_sample", [])) > 0
+        )
+
+        if not is_two_hop:
+            return True
+
+        anchor_name = row.get("anchor_name", "")
+        mid_nodes = row.get("mid_nodes_sample", [])
+        mid_name = mid_nodes[0].get("name", "") if mid_nodes else ""
+
+        if not mid_name:
+            return True
+
+        q_lower = question.lower()
+        anchor_in_q = anchor_name.lower() in q_lower if anchor_name else True
+        mid_in_q = mid_name.lower() in q_lower
+
+        # 両方のエンティティを含むかチェック
+        if not (anchor_in_q and mid_in_q):
+            return False
+
+        # A-B関係を聞く質問や曖昧な質問はリジェクト
+        bad_patterns = [
+            "how does", "how is", "how are",
+            "relate to", "related to", "relationship between",
+            "connection between", "link between",
+            "what role", "what is the role", "what is the significance",
+            "what is the importance", "what is the function"
+        ]
+        for pattern in bad_patterns:
+            if pattern in q_lower:
+                return False
+
+        # 良いパターンを含むかチェック（少なくとも1つは含むべき）
+        good_patterns = [
+            "what are", "which are", "what ", "which ",
+            "subcategories", "subtypes", "subclasses",
+            "belong to", "part of", "types of"
+        ]
+        has_good_pattern = any(pattern in q_lower for pattern in good_patterns)
+
+        return has_good_pattern
+
     def generate(self, row: Dict[str, Any]) -> str:
         desc = _pattern_description(row)
 
@@ -296,14 +380,14 @@ The user provides a "Row description" describing a query path on a graph.
 
 ### Guidelines for Natural Generation
 1. **Avoid Graph Jargon**: Do NOT use words like "anchor", "hop", "edge", "node", "starting from", "via relation", or "two levels of".
-2. **Use Domain Verbs**: 
+2. **Use Domain Verbs**:
    - Instead of "related to", use specific verbs based on the entity types (e.g., "treats", "targets", "expresses", "is involved in", "causes").
    - If the relation is "parent-child", use "is a type of", "belongs to the category of", or "is a subclass of".
-3. **Hide the Structure**: 
+3. **Hide the Structure**:
    - For 2-hop chains (A->B->C), phrase it as a single cohesive question (e.g., "What drug targets proteins associated with Disease X?").
    - For Intersections (A & B -> C), use "both" or "and" naturally (e.g., "Which gene is targeted by Drug A and also associated with Disease B?").
 4. **Be Concise but Specific**: The question should be answerable by a domain expert without seeing the graph.
-5. **Context-Aware Verbs (Crucial)**: 
+5. **Context-Aware Verbs (Crucial)**:
    - If the relation is "parent-child" but the types are DIFFERENT (e.g., Disease -> Gene), do NOT use "subtype". Use "associated with" or "implicated in".
    - If asking about Gene-Gene expression, use "**co-expressed with**" instead of "expressed in".
    - "Expressed in" should only be used for Anatomy/Tissues (e.g., "expressed in the Liver").
@@ -330,9 +414,43 @@ Row description:
 Return JSON with a single key "question".
 """.strip()
 
-        res = self._model.invoke(prompt)
-        print(res)
-        return res.question.strip()
+        # two_hop_chainの場合はリトライ付きで生成
+        max_retries = 3
+        for attempt in range(max_retries):
+            res = self._model.invoke(prompt)
+            question = res.question.strip()
+
+            is_valid = self._validate_two_hop_question(question, row)
+            if is_valid:
+                print(res, flush=True)
+                return question
+
+            # リトライプロンプト：より強調
+            if attempt < max_retries - 1:
+                anchor_name = row.get("anchor_name", "")
+                mid_nodes = row.get("mid_nodes_sample", [])
+                mid_name = mid_nodes[0].get("name", "") if mid_nodes else ""
+                prompt = f"""
+Your previous answer was REJECTED because it did not contain BOTH required entity names.
+
+REQUIRED ENTITY NAMES (must appear EXACTLY in your question):
+1. "{anchor_name}"
+2. "{mid_name}"
+
+Previous rejected question: "{question}"
+
+Generate a NEW question that includes BOTH entity names above. Copy and paste them directly.
+
+{desc}
+
+{lang_instruction}
+Return JSON with a single key "question".
+""".strip()
+
+        # 最後のリトライでも失敗した場合は最後の結果を返す
+        print(f"Warning: Could not generate valid question after {max_retries} attempts", flush=True)
+        print(res, flush=True)
+        return question
 
 
 def main() -> None:

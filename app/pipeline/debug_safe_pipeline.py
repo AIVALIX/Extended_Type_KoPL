@@ -120,26 +120,34 @@ def run_debug(
         print("=" * 60)
         print(f"  Entities ({len(result.answer_entities)}): {result.answer_entities[:10]}")
 
-    # 評価
-    hits_at_1 = False
-    hits_at_10 = False
+    # 評価（集合ベース）
+    accuracy = False
+    recall = 0.0
+    precision = 0.0
+    f1 = 0.0
 
     if gold_info:
         gold_set = set(gold_info["answers"])
         pred_set = set(result.answer_entities)
 
-        hits_at_1 = bool(gold_set & set(result.answer_entities[:1]))
-        hits_at_10 = bool(gold_set & set(result.answer_entities[:10]))
+        # 集合ベースのメトリクス
+        overlap = gold_set & pred_set
+        accuracy = len(overlap) > 0
+        recall = len(overlap) / len(gold_set) if gold_set else 0.0
+        precision = len(overlap) / len(pred_set) if pred_set else 0.0
+        if precision + recall > 0:
+            f1 = 2 * precision * recall / (precision + recall)
 
         if verbose:
             print("\n" + "=" * 60)
             print("EVALUATION")
             print("=" * 60)
-            print(f"  Hits@1:  {hits_at_1}")
-            print(f"  Hits@10: {hits_at_10}")
+            print(f"  Accuracy:  {accuracy}")
+            print(f"  Recall:    {recall:.3f}")
+            print(f"  Precision: {precision:.3f}")
+            print(f"  F1:        {f1:.3f}")
             print(f"  Gold Relations: {gold_info['relations']}")
 
-            overlap = gold_set & pred_set
             if overlap:
                 print(f"\n  Correct predictions: {list(overlap)[:5]}")
             else:
@@ -153,8 +161,10 @@ def run_debug(
         "num_query_graphs": len(result.candidate_query_graphs),
         "num_subgraphs": len(result.matched_subgraphs),
         "answer_entities": result.answer_entities,
-        "hits_at_1": hits_at_1,
-        "hits_at_10": hits_at_10,
+        "accuracy": accuracy,
+        "recall": recall,
+        "precision": precision,
+        "f1": f1,
     }
 
 
@@ -199,20 +209,22 @@ def main():
             print("\n" + "=" * 60)
             print("SUMMARY")
             print("=" * 60)
-            hits1 = sum(1 for r in results if r.get("hits_at_1"))
-            hits10 = sum(1 for r in results if r.get("hits_at_10"))
             total = len(results)
+            acc_count = sum(1 for r in results if r.get("accuracy"))
+            avg_recall = sum(r.get("recall", 0) for r in results) / total
+            avg_f1 = sum(r.get("f1", 0) for r in results) / total
 
-            print(f"{'Index':<8} {'Hits@1':<8} {'Hits@10':<8} {'#Answers':<10}")
+            print(f"{'Index':<8} {'Acc':<6} {'Recall':<8} {'F1':<8} {'#Answers':<10}")
             print("-" * 60)
             for r in results:
-                h1 = "" if r.get("hits_at_1") else ""
-                h10 = "" if r.get("hits_at_10") else ""
+                acc = "Y" if r.get("accuracy") else "N"
+                rec = f"{r.get('recall', 0):.2f}"
+                f1_val = f"{r.get('f1', 0):.2f}"
                 n_ans = len(r.get("answer_entities", []))
-                print(f"{r['index']:<8} {h1:<8} {h10:<8} {n_ans:<10}")
+                print(f"{r['index']:<8} {acc:<6} {rec:<8} {f1_val:<8} {n_ans:<10}")
 
             print("-" * 60)
-            print(f"Total: Hits@1={hits1}/{total} ({hits1/total*100:.1f}%), Hits@10={hits10}/{total} ({hits10/total*100:.1f}%)")
+            print(f"Total: Acc={acc_count}/{total} ({acc_count/total*100:.1f}%), Recall={avg_recall*100:.1f}%, F1={avg_f1*100:.1f}%")
     else:
         print("Please specify --data or --question")
 

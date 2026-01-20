@@ -99,6 +99,71 @@ class TransitionMap:
         return self.mapping.get((relation, current_type), "Entity")
 
 
+@dataclass(frozen=True)
+class TransitionMapMulti:
+    """(relation, src_type) -> Set[tgt_types] を保持するTransitionMap"""
+    # (relation, src_clean_type) -> set of tgt_clean_types
+    mapping: Mapping[Tuple[str, str], frozenset]
+
+    def get_target_types(self, *, current_type: str, relation: str) -> frozenset:
+        """指定した(relation, current_type)から到達可能な全てのtarget_typesを返す"""
+        if not relation:
+            return frozenset()
+        # 大文字小文字両方で検索
+        for ct in [current_type, current_type.lower(), current_type.capitalize()]:
+            result = self.mapping.get((relation, ct))
+            if result:
+                return result
+        return frozenset()
+
+    def is_valid_transition(
+        self, *, current_type: str, relation: str, target_type: str
+    ) -> bool:
+        """指定した遷移が有効かどうかを判定"""
+        target_types = self.get_target_types(current_type=current_type, relation=relation)
+        if not target_types:
+            return False
+        # 大文字小文字を無視して比較
+        target_type_lower = target_type.lower()
+        return any(t.lower() == target_type_lower for t in target_types)
+
+
+def build_transition_map_multi_from_neo4j() -> TransitionMapMulti:
+    """Neo4jから直接TransitionMapMultiを構築する。
+
+    全ての(relation, src_type) -> {tgt_types}を取得。
+    """
+    from database.search import GraphPathFinder
+
+    finder = GraphPathFinder()
+
+    query = '''
+    MATCH (n)-[r]-(m)
+    WITH type(r) AS rel, labels(n)[0] AS src_type, labels(m)[0] AS tgt_type
+    RETURN DISTINCT rel, src_type, tgt_type
+    '''
+
+    result = finder.graph.run(query).data()
+
+    # (relation, src_type) -> set of tgt_types
+    mapping_dict: DefaultDict[Tuple[str, str], set] = defaultdict(set)
+
+    for row in result:
+        rel = row.get("rel")
+        src = row.get("src_type")
+        tgt = row.get("tgt_type")
+        if rel and src and tgt:
+            # src_typeを正規化
+            src_clean = _clean_type(src)
+            tgt_clean = _clean_type(tgt)
+            mapping_dict[(rel, src_clean)].add(tgt_clean)
+
+    # frozensetに変換
+    mapping = {k: frozenset(v) for k, v in mapping_dict.items()}
+
+    return TransitionMapMulti(mapping=mapping)
+
+
 def build_transition_map_from_kg(
     *, nodes_csv: Path, rels_csv: Path, max_edges: int = 0
 ) -> TransitionMap:

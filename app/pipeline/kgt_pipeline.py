@@ -96,7 +96,7 @@ class SchemaGraph:
         self.all_relations: Set[str] = set()
 
     def add_edge(self, src_type: str, relation: str, tgt_type: str):
-        """エッジを追加（無向）"""
+        """エッジを追加（有向）"""
         self.all_types.add(src_type)
         self.all_types.add(tgt_type)
         self.all_relations.add(relation)
@@ -106,10 +106,8 @@ class SchemaGraph:
         if tgt_type not in self.adjacency:
             self.adjacency[tgt_type] = []
 
-        # 無向グラフとして両方向に追加
+        # 有向グラフとして順方向のみ追加
         self.adjacency[src_type].append((tgt_type, relation))
-        if src_type != tgt_type:
-            self.adjacency[tgt_type].append((src_type, relation))
 
     def bfs_all_shortest_paths(
         self,
@@ -409,8 +407,8 @@ Return JSON."""
 
         all_paths = []
         for t_type in target_types:
-            # 全パスを探索（最短のみではなく）
-            paths = self.schema.find_all_paths(head_type, t_type, max_depth=3, shortest_only=False)
+            # 最短パスのみを探索
+            paths = self.schema.find_all_paths(head_type, t_type, max_depth=3, shortest_only=True)
             all_paths.extend(paths)
 
         if not all_paths:
@@ -451,26 +449,26 @@ Return JSON."""
             return f"`{t}`" if "/" in t else t
 
         if len(path.types) == 2:
-            # 1-hop（無向マッチング - 両方向を試す）
+            # 1-hop（有向マッチング）
             return f"""
-            MATCH (h:{get_label(path.types[0])})-[r:{path.relations[0]}]-(t:{get_label(path.types[1])})
+            MATCH (h:{get_label(path.types[0])})-[r:{path.relations[0]}]->(t:{get_label(path.types[1])})
             WHERE h.name = "{analysis.head_entity_name}"
             RETURN DISTINCT t.name AS answer
             LIMIT 50
             """
         elif len(path.types) == 3:
-            # 2-hop（無向マッチング）
+            # 2-hop（有向マッチング）
             return f"""
-            MATCH (h:{get_label(path.types[0])})-[r1:{path.relations[0]}]-(m:{get_label(path.types[1])})-[r2:{path.relations[1]}]-(t:{get_label(path.types[2])})
+            MATCH (h:{get_label(path.types[0])})-[r1:{path.relations[0]}]->(m:{get_label(path.types[1])})-[r2:{path.relations[1]}]->(t:{get_label(path.types[2])})
             WHERE h.name = "{analysis.head_entity_name}"
             RETURN DISTINCT t.name AS answer
             LIMIT 50
             """
         else:
-            # 3-hop以上（無向マッチング）
+            # 3-hop以上（有向マッチング）
             pattern_parts = [f"(n0:{get_label(path.types[0])})"]
             for i, rel in enumerate(path.relations):
-                pattern_parts.append(f"-[r{i}:{rel}]-(n{i+1}:{get_label(path.types[i+1])})")
+                pattern_parts.append(f"-[r{i}:{rel}]->(n{i+1}:{get_label(path.types[i+1])})")
             pattern = "".join(pattern_parts)
 
             return f"""
@@ -496,7 +494,7 @@ Return JSON."""
         question: str,
         subgraph: List[Dict[str, Any]]
     ) -> Tuple[List[str], Optional[str]]:
-        """Phase 5: 回答生成"""
+        """Phase 5: 回答生成（全エンティティを返す）"""
 
         if not subgraph:
             return [], None
@@ -513,28 +511,8 @@ Return JSON."""
         # 重複除去
         entities = list(dict.fromkeys(entities))
 
-        # LLMで剪定と自然言語回答生成
-        if entities:
-            llm_with_output = self.llm.with_structured_output(PrunedAnswerResponse)
-            prompt = f"""Given this question and retrieved entities, generate an answer.
-
-Question: {question}
-
-Retrieved entities:
-{json.dumps(entities[:30], indent=2)}
-
-Tasks:
-1. Filter out any irrelevant entities
-2. Generate a natural language answer
-
-Return JSON with relevant_entities and natural_answer."""
-
-            try:
-                result = llm_with_output.invoke(prompt)
-                return result.relevant_entities, result.natural_answer
-            except Exception:
-                pass
-
+        # LLMによるフィルタリングは行わず、全エンティティを返す
+        # （パス選択の段階で絞り込みは完了している）
         return entities, None
 
 

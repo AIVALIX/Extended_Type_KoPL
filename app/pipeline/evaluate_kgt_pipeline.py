@@ -4,6 +4,10 @@ KGT Pipeline 評価スクリプト
 使用方法:
   python pipeline/evaluate_kgt_pipeline.py --num-samples 20
   python pipeline/evaluate_kgt_pipeline.py --dataset one_hop two_hop --num-samples 50
+
+出力:
+  - result/pipeline_outputs/ ディレクトリにJSONL形式で結果を保存
+  - 精度算出は evaluate_all_results.py で一括して行う
 """
 
 from __future__ import annotations
@@ -11,14 +15,13 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
 from pipeline.kgt_pipeline import KGTPipeline, KGTResult
+from pipeline.eval_metrics import PipelineOutput, save_pipeline_outputs
 
 
 # データセット設定
@@ -50,52 +53,13 @@ DATASETS_V2 = {
 }
 
 
-@dataclass
-class EvalResult:
-    idx: int
-    question: str
-    entity_name: str
-    gold_answers: List[str]
-    gold_relations: List[str]
-    predicted_path: Optional[List[str]]
-    predicted_entities: List[str]
-    hits_at_1: bool = False
-    hits_at_5: bool = False
-    hits_at_10: bool = False
-    reciprocal_rank: float = 0.0
-    path_match: bool = False
-    error: Optional[str] = None
-    latency_ms: float = 0.0
-
-
-def calculate_reciprocal_rank(predicted: List[str], gold: Set[str], max_k: int = 100) -> float:
-    for i, pred in enumerate(predicted[:max_k]):
-        if pred in gold:
-            return 1.0 / (i + 1)
-    return 0.0
-
-
-def check_hits_at_k(predicted: List[str], gold: Set[str], k: int) -> bool:
-    return bool(gold & set(predicted[:k]))
-
-
-def check_path_match(predicted_path: Optional[List[str]], gold_relations: List[str]) -> bool:
-    if not predicted_path:
-        return False
-    predicted_set = set(predicted_path)
-    for rel in gold_relations:
-        if rel in predicted_set:
-            return True
-    return False
-
-
-def evaluate_sample(
+def run_sample(
     idx: int,
     sample: Dict[str, Any],
     pipeline: KGTPipeline,
     dataset_config: Dict[str, Any],
-) -> EvalResult:
-    """単一サンプルを評価"""
+) -> PipelineOutput:
+    """単一サンプルを実行"""
     question = sample.get("question", "")
     entity_name = sample.get(dataset_config["entity_key"], "")
 
@@ -106,58 +70,47 @@ def evaluate_sample(
         sample.get(k, "") for k in dataset_config["gold_relations_keys"]
         if sample.get(k)
     ]
-    gold_set = set(gold_answers)
 
-    result = EvalResult(
+    output = PipelineOutput(
         idx=idx,
         question=question,
         entity_name=entity_name,
         gold_answers=gold_answers,
         gold_relations=gold_relations,
-        predicted_path=None,
+        predicted_relations=None,
         predicted_entities=[],
     )
 
     try:
         start = time.time()
         kgt_result = pipeline.run(question=question, entity_name=entity_name)
-        result.latency_ms = (time.time() - start) * 1000
+        output.latency_ms = (time.time() - start) * 1000
 
         # 予測パス
         if kgt_result.optimal_path:
-            result.predicted_path = kgt_result.optimal_path.relations
+            output.predicted_relations = kgt_result.optimal_path.relations
 
         # 予測エンティティ
-        result.predicted_entities = kgt_result.answer_entities
-
-        # メトリクス計算
-        if result.predicted_entities:
-            result.hits_at_1 = check_hits_at_k(result.predicted_entities, gold_set, 1)
-            result.hits_at_5 = check_hits_at_k(result.predicted_entities, gold_set, 5)
-            result.hits_at_10 = check_hits_at_k(result.predicted_entities, gold_set, 10)
-            result.reciprocal_rank = calculate_reciprocal_rank(result.predicted_entities, gold_set)
-
-        result.path_match = check_path_match(result.predicted_path, gold_relations)
+        output.predicted_entities = kgt_result.answer_entities
 
     except Exception as e:
-        result.error = str(e)
+        output.error = str(e)
 
-    return result
+    return output
 
 
-def run_evaluation(
+def run_pipeline(
     dataset_name: str,
     dataset_config: Dict[str, Any],
     *,
     num_samples: int = 50,
-    num_workers: int = 4,
-) -> Tuple[List[EvalResult], Dict[str, float]]:
-    """データセットを評価"""
+) -> List[PipelineOutput]:
+    """データセットに対してパイプラインを実行"""
 
     data_path = Path(dataset_config["path"])
     if not data_path.exists():
         print(f"  [SKIP] File not found: {data_path}")
-        return [], {}
+        return []
 
     samples = []
     with data_path.open("r", encoding="utf-8") as f:
@@ -170,115 +123,57 @@ def run_evaluation(
 
     print(f"  Loaded {len(samples)} samples")
 
-    # パイプライン作成（各ワーカーで共有可能）
+    # パイプライン作成
     pipeline = KGTPipeline()
 
-    results: List[EvalResult] = []
+    outputs: List[PipelineOutput] = []
 
-    # 逐次処理（KGTPipelineは内部でLLM呼び出しが多いため）
+    # 逐次処理
     for i, sample in enumerate(tqdm(samples, desc=f"  {dataset_name}")):
-        result = evaluate_sample(i, sample, pipeline, dataset_config)
-        results.append(result)
+        output = run_sample(i, sample, pipeline, dataset_config)
+        outputs.append(output)
 
-    # メトリクス集計
-    total = len(results)
-    if total == 0:
-        return results, {}
-
-    errors = sum(1 for r in results if r.error)
-    success = total - errors
-
-    metrics = {
-        "total": total,
-        "success": success,
-        "errors": errors,
-        "hits_at_1": sum(r.hits_at_1 for r in results) / total * 100,
-        "hits_at_5": sum(r.hits_at_5 for r in results) / total * 100,
-        "hits_at_10": sum(r.hits_at_10 for r in results) / total * 100,
-        "mrr": sum(r.reciprocal_rank for r in results) / total * 100,
-        "path_accuracy": sum(r.path_match for r in results) / total * 100,
-        "avg_latency_ms": sum(r.latency_ms for r in results) / total,
-    }
-
-    return results, metrics
+    return outputs
 
 
 def main():
-    p = argparse.ArgumentParser(description="Evaluate KGT Pipeline")
+    p = argparse.ArgumentParser(description="Run KGT Pipeline")
     p.add_argument("--dataset", type=str, nargs="+",
                    choices=list(DATASETS_V2.keys()),
-                   help="Specific dataset(s) to evaluate (default: all)")
+                   help="Specific dataset(s) to run (default: all)")
     p.add_argument("--num-samples", type=int, default=20)
-    p.add_argument("--output", type=Path, default=None,
-                   help="Output JSON file for detailed results")
+    p.add_argument("--output-dir", type=Path, default=Path("result/pipeline_outputs"),
+                   help="Output directory for pipeline results")
     args = p.parse_args()
 
-    datasets_to_eval = args.dataset if args.dataset else list(DATASETS_V2.keys())
+    datasets_to_run = args.dataset if args.dataset else list(DATASETS_V2.keys())
 
-    all_metrics = {}
-    all_results = {}
-
-    for ds_name in datasets_to_eval:
+    for ds_name in datasets_to_run:
         if ds_name not in DATASETS_V2:
             print(f"Unknown dataset: {ds_name}")
             continue
 
         print(f"\n{'='*60}")
-        print(f"Evaluating: {ds_name}")
+        print(f"Running KGT: {ds_name}")
         print(f"{'='*60}")
 
         ds_config = DATASETS_V2[ds_name]
-        results, metrics = run_evaluation(
+        outputs = run_pipeline(
             ds_name,
             ds_config,
             num_samples=args.num_samples,
         )
 
-        if metrics:
-            all_metrics[ds_name] = metrics
-            all_results[ds_name] = [
-                {
-                    "idx": r.idx,
-                    "question": r.question,
-                    "entity_name": r.entity_name,
-                    "gold_answers": r.gold_answers[:5],
-                    "gold_relations": r.gold_relations,
-                    "predicted_path": r.predicted_path,
-                    "predicted_entities": r.predicted_entities[:10],
-                    "hits_at_1": r.hits_at_1,
-                    "hits_at_10": r.hits_at_10,
-                    "path_match": r.path_match,
-                    "error": r.error,
-                }
-                for r in results
-            ]
-
-            print(f"\n  Results for {ds_name}:")
-            print(f"    Hits@1:  {metrics['hits_at_1']:.1f}%")
-            print(f"    Hits@5:  {metrics['hits_at_5']:.1f}%")
-            print(f"    Hits@10: {metrics['hits_at_10']:.1f}%")
-            print(f"    MRR:     {metrics['mrr']:.1f}%")
-            print(f"    PathAcc: {metrics['path_accuracy']:.1f}%")
-            print(f"    Errors:  {metrics['errors']}/{metrics['total']}")
-            print(f"    Latency: {metrics['avg_latency_ms']:.0f}ms")
-
-    # サマリー表示
-    print(f"\n{'='*60}")
-    print("SUMMARY (KGT Pipeline)")
-    print(f"{'='*60}")
-    print(f"{'Dataset':<25} {'Hits@1':>8} {'Hits@10':>8} {'PathAcc':>8} {'MRR':>8}")
-    print("-" * 60)
-    for ds_name, m in all_metrics.items():
-        print(f"{ds_name:<25} {m['hits_at_1']:>7.1f}% {m['hits_at_10']:>7.1f}% {m['path_accuracy']:>7.1f}% {m['mrr']:>7.1f}%")
-
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open("w", encoding="utf-8") as f:
-            json.dump({
-                "metrics": all_metrics,
-                "results": all_results,
-            }, f, ensure_ascii=False, indent=2)
-        print(f"\nDetailed results saved to: {args.output}")
+        if outputs:
+            save_pipeline_outputs(
+                outputs,
+                args.output_dir,
+                "kgt",
+                ds_name,
+            )
+            errors = sum(1 for o in outputs if o.error)
+            print(f"  Saved {len(outputs)} outputs ({errors} errors)")
+            print(f"  -> {args.output_dir}/kgt_{ds_name}.jsonl")
 
 
 if __name__ == "__main__":
