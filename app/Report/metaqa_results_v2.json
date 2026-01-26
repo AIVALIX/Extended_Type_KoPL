@@ -1,0 +1,96 @@
+{
+  "extended_type_kopl": {
+    "1hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 91.0,
+      "recall": 91.0,
+      "precision": 91.0,
+      "f1": 91.0,
+      "avg_latency_ms": 1834.7659230232239,
+      "path_accuracy": 91.0
+    },
+    "2hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 95.0,
+      "recall": 95.0,
+      "precision": 94.83333333333333,
+      "f1": 94.9090909090909,
+      "avg_latency_ms": 17432.928845882416,
+      "path_accuracy": 57.99999999999999
+    },
+    "3hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 96.0,
+      "recall": 96.0,
+      "precision": 86.10214127756564,
+      "f1": 90.05326729164388,
+      "avg_latency_ms": 2990.812249183655,
+      "path_accuracy": 2.0
+    }
+  },
+  "safe": {
+    "1hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 100.0,
+      "recall": 100.0,
+      "precision": 100.0,
+      "f1": 100.0,
+      "avg_latency_ms": 1481.1478877067566,
+      "path_accuracy": 94.0
+    },
+    "2hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 90.0,
+      "recall": 90.77118644067797,
+      "precision": 82.53443125769306,
+      "f1": 85.66541345910709,
+      "avg_latency_ms": 2274.162163734436,
+      "path_accuracy": 56.99999999999999
+    }
+  },
+  "kgt": {
+    "1hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 90.0,
+      "recall": 90.0,
+      "precision": 90.0,
+      "f1": 90.0,
+      "avg_latency_ms": 1448.9472341537476,
+      "path_accuracy": 94.0
+    },
+    "2hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 57.99999999999999,
+      "recall": 57.99999999999999,
+      "precision": 55.243028638028626,
+      "f1": 56.40504851873273,
+      "avg_latency_ms": 1580.6367945671082,
+      "path_accuracy": 40.0
+    },
+    "3hop": {
+      "total": 100,
+      "success": 100,
+      "errors": 0,
+      "accuracy": 7.000000000000001,
+      "recall": 13.194401338370094,
+      "precision": 30.583333333333336,
+      "f1": 14.658060082516561,
+      "avg_latency_ms": 1553.2293176651,
+      "path_accuracy": 0.0
+    }
+  }
+}

@@ -483,3 +483,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+"""
+docker compose run --rm app python /app/dataset_construction/generate_questions.py --in /app/result/dataset_splits_v2/two_hop_chain/train.jsonl --out /app/result/dataset_construction_v2/two_hop_chain_train_with_questions.jsonl --lang ja --parallel --max-workers 32 --max-inflight 64 --per-task-timeout 300 --overwrite --max-rows 20
+"""

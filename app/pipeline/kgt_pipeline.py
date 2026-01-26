@@ -27,19 +27,26 @@ from database.search import GraphPathFinder
 # Data Classes
 # =============================================================================
 
+
 @dataclass
 class QuestionAnalysis:
     """質問分析結果"""
+
     head_entity_name: str  # H_n: ヘッドエンティティ名
-    head_entity_type: Optional[str] = None  # H_t: ヘッドエンティティタイプ（DBから取得）
+    head_entity_type: Optional[str] = (
+        None  # H_t: ヘッドエンティティタイプ（DBから取得）
+    )
     tail_entity_type: Optional[str] = None  # T_t: テールエンティティタイプ
-    tail_attributes: List[str] = field(default_factory=list)  # T_a: テールエンティティ属性
+    tail_attributes: List[str] = field(
+        default_factory=list
+    )  # T_a: テールエンティティ属性
     head_entity_id: Optional[str] = None  # DBで見つかったエンティティID
 
 
 @dataclass
 class SchemaPath:
     """スキーマパス"""
+
     path: List[str]  # [type1, rel1, type2, rel2, type3, ...]
     types: List[str]  # [type1, type2, type3, ...]
     relations: List[str]  # [rel1, rel2, ...]
@@ -49,6 +56,7 @@ class SchemaPath:
 @dataclass
 class KGTResult:
     """KGTパイプライン結果"""
+
     question: str
     analysis: QuestionAnalysis
     schema_paths: List[SchemaPath]
@@ -64,39 +72,60 @@ class KGTResult:
 # Pydantic Models for LLM Structured Output
 # =============================================================================
 
+
 class QuestionAnalysisResponse(BaseModel):
     """LLMによる質問分析の出力"""
-    head_entity_name: str = Field(..., description="The main entity mentioned in the question (anchor)")
-    tail_entity_type: str = Field(..., description="The type of entity being asked about (e.g., disease, drug, gene/protein)")
-    tail_attributes: List[str] = Field(default_factory=list, description="Any specific attributes or constraints for the answer")
+
+    head_entity_name: str = Field(
+        ..., description="The main entity mentioned in the question (anchor)"
+    )
+    tail_entity_type: str = Field(
+        ...,
+        description="The type of entity being asked about (e.g., disease, drug, gene/protein)",
+    )
+    tail_attributes: List[str] = Field(
+        default_factory=list,
+        description="Any specific attributes or constraints for the answer",
+    )
 
 
 class CypherQueryResponse(BaseModel):
     """LLMによるCypherクエリ生成の出力"""
-    cypher_query: str = Field(..., description="The Cypher query to retrieve the subgraph")
+
+    cypher_query: str = Field(
+        ..., description="The Cypher query to retrieve the subgraph"
+    )
     explanation: str = Field(default="", description="Brief explanation of the query")
 
 
 class PrunedAnswerResponse(BaseModel):
     """LLMによる回答生成の出力"""
-    relevant_entities: List[str] = Field(..., description="List of relevant entity names that answer the question")
-    natural_answer: str = Field(..., description="Natural language answer to the question")
+
+    relevant_entities: List[str] = Field(
+        ..., description="List of relevant entity names that answer the question"
+    )
+    natural_answer: str = Field(
+        ..., description="Natural language answer to the question"
+    )
 
 
 # =============================================================================
 # Schema Graph
 # =============================================================================
 
+
 class SchemaGraph:
     """スキーマグラフ（エンティティタイプとリレーションの無向グラフ）"""
 
     def __init__(self):
-        self.adjacency: Dict[str, List[Tuple[str, str]]] = {}  # type -> [(neighbor_type, relation), ...]
+        self.adjacency: Dict[str, List[Tuple[str, str]]] = (
+            {}
+        )  # type -> [(neighbor_type, relation), ...]
         self.all_types: Set[str] = set()
         self.all_relations: Set[str] = set()
 
     def add_edge(self, src_type: str, relation: str, tgt_type: str):
-        """エッジを追加（有向）"""
+        """エッジを追加（無向）"""
         self.all_types.add(src_type)
         self.all_types.add(tgt_type)
         self.all_relations.add(relation)
@@ -106,14 +135,13 @@ class SchemaGraph:
         if tgt_type not in self.adjacency:
             self.adjacency[tgt_type] = []
 
-        # 有向グラフとして順方向のみ追加
+        # 無向グラフとして両方向に追加
         self.adjacency[src_type].append((tgt_type, relation))
+        if src_type != tgt_type:
+            self.adjacency[tgt_type].append((src_type, relation))
 
     def bfs_all_shortest_paths(
-        self,
-        start_type: str,
-        end_type: str,
-        max_depth: int = 4
+        self, start_type: str, end_type: str, max_depth: int = 4
     ) -> List[SchemaPath]:
         """BFSで最短パスを探索（shortest_onlyモードでは最短のみ）"""
         return self.find_all_paths(start_type, end_type, max_depth, shortest_only=True)
@@ -123,7 +151,7 @@ class SchemaGraph:
         start_type: str,
         end_type: str,
         max_depth: int = 3,
-        shortest_only: bool = False
+        shortest_only: bool = False,
     ) -> List[SchemaPath]:
         """全てのパスを探索（DFS）"""
         if start_type not in self.adjacency or end_type not in self.adjacency:
@@ -143,11 +171,13 @@ class SchemaGraph:
                     full_path.append(t)
                     if i < len(rel_path):
                         full_path.append(rel_path[i])
-                all_paths.append(SchemaPath(
-                    path=full_path,
-                    types=type_path.copy(),
-                    relations=rel_path.copy()
-                ))
+                all_paths.append(
+                    SchemaPath(
+                        path=full_path,
+                        types=type_path.copy(),
+                        relations=rel_path.copy(),
+                    )
+                )
                 return
 
             # 隣接ノードを探索
@@ -158,7 +188,7 @@ class SchemaGraph:
                         neighbor,
                         type_path + [neighbor],
                         rel_path + [relation],
-                        depth + 1
+                        depth + 1,
                     )
                     if neighbor != end_type:
                         visited.discard(neighbor)
@@ -191,6 +221,7 @@ def build_schema_graph_from_neo4j() -> SchemaGraph:
 # KGT Pipeline
 # =============================================================================
 
+
 class KGTPipeline:
     """KGTパイプライン"""
 
@@ -220,7 +251,9 @@ class KGTPipeline:
         # 1. Question Analysis
         log.append("Phase 1: Question Analysis")
         analysis = self._analyze_question(question, entity_name)
-        log.append(f"  Head entity: {analysis.head_entity_name} (type: {analysis.head_entity_type})")
+        log.append(
+            f"  Head entity: {analysis.head_entity_name} (type: {analysis.head_entity_type})"
+        )
         log.append(f"  Tail type: {analysis.tail_entity_type}")
 
         # ヘッドエンティティタイプが取得できない場合
@@ -240,9 +273,7 @@ class KGTPipeline:
         # 2. Schema-Based Path Finding
         log.append("Phase 2: Schema-Based Path Finding")
         schema_paths = self._find_schema_paths(
-            analysis.head_entity_type,
-            analysis.tail_entity_type,
-            question
+            analysis.head_entity_type, analysis.tail_entity_type, question
         )
         log.append(f"  Found {len(schema_paths)} candidate paths")
 
@@ -261,7 +292,9 @@ class KGTPipeline:
 
         # 最適パス選択
         optimal_path = schema_paths[0]  # スコア順でソート済み
-        log.append(f"  Optimal path: {optimal_path.path} (score: {optimal_path.score:.3f})")
+        log.append(
+            f"  Optimal path: {optimal_path.path} (score: {optimal_path.score:.3f})"
+        )
 
         # 3. Cypher Query Generation
         log.append("Phase 3: Cypher Query Generation")
@@ -291,9 +324,7 @@ class KGTPipeline:
         )
 
     def _analyze_question(
-        self,
-        question: str,
-        entity_name: Optional[str] = None
+        self, question: str, entity_name: Optional[str] = None
     ) -> QuestionAnalysis:
         """Phase 1: 質問分析"""
 
@@ -355,7 +386,9 @@ Return JSON."""
             head_entity_id=head_id,
         )
 
-    def _lookup_entity_type(self, entity_name: str) -> Tuple[Optional[str], Optional[str]]:
+    def _lookup_entity_type(
+        self, entity_name: str
+    ) -> Tuple[Optional[str], Optional[str]]:
         """DBからエンティティタイプを検索"""
         graph = self.finder.graph
 
@@ -392,10 +425,7 @@ Return JSON."""
         return None, None
 
     def _find_schema_paths(
-        self,
-        head_type: str,
-        tail_type: Optional[str],
-        question: str
+        self, head_type: str, tail_type: Optional[str], question: str
     ) -> List[SchemaPath]:
         """Phase 2: スキーマベースのパス探索（全深度）"""
 
@@ -407,8 +437,10 @@ Return JSON."""
 
         all_paths = []
         for t_type in target_types:
-            # 最短パスのみを探索
-            paths = self.schema.find_all_paths(head_type, t_type, max_depth=3, shortest_only=True)
+            # 全パスを探索（最短のみではなく）
+            paths = self.schema.find_all_paths(
+                head_type, t_type, max_depth=3, shortest_only=False
+            )
             all_paths.extend(paths)
 
         if not all_paths:
@@ -429,7 +461,9 @@ Return JSON."""
         q_vec = np.array(question_embedding)
         for i, p in enumerate(all_paths):
             p_vec = np.array(path_embeddings[i])
-            similarity = np.dot(q_vec, p_vec) / (np.linalg.norm(q_vec) * np.linalg.norm(p_vec))
+            similarity = np.dot(q_vec, p_vec) / (
+                np.linalg.norm(q_vec) * np.linalg.norm(p_vec)
+            )
             p.score = float(similarity)
 
         # スコア順にソート
@@ -442,33 +476,37 @@ Return JSON."""
         # LLM生成は信頼性が低いため、テンプレートベースで構築
         return self._build_fallback_cypher(analysis, path)
 
-    def _build_fallback_cypher(self, analysis: QuestionAnalysis, path: SchemaPath) -> str:
+    def _build_fallback_cypher(
+        self, analysis: QuestionAnalysis, path: SchemaPath
+    ) -> str:
         """テンプレートベースのCypher構築（無向マッチング）"""
 
         def get_label(t: str) -> str:
             return f"`{t}`" if "/" in t else t
 
         if len(path.types) == 2:
-            # 1-hop（有向マッチング）
+            # 1-hop（無向マッチング - 両方向を試す）
             return f"""
-            MATCH (h:{get_label(path.types[0])})-[r:{path.relations[0]}]->(t:{get_label(path.types[1])})
+            MATCH (h:{get_label(path.types[0])})-[r:{path.relations[0]}]-(t:{get_label(path.types[1])})
             WHERE h.name = "{analysis.head_entity_name}"
             RETURN DISTINCT t.name AS answer
             LIMIT 50
             """
         elif len(path.types) == 3:
-            # 2-hop（有向マッチング）
+            # 2-hop（無向マッチング）
             return f"""
-            MATCH (h:{get_label(path.types[0])})-[r1:{path.relations[0]}]->(m:{get_label(path.types[1])})-[r2:{path.relations[1]}]->(t:{get_label(path.types[2])})
+            MATCH (h:{get_label(path.types[0])})-[r1:{path.relations[0]}]-(m:{get_label(path.types[1])})-[r2:{path.relations[1]}]-(t:{get_label(path.types[2])})
             WHERE h.name = "{analysis.head_entity_name}"
             RETURN DISTINCT t.name AS answer
             LIMIT 50
             """
         else:
-            # 3-hop以上（有向マッチング）
+            # 3-hop以上（無向マッチング）
             pattern_parts = [f"(n0:{get_label(path.types[0])})"]
             for i, rel in enumerate(path.relations):
-                pattern_parts.append(f"-[r{i}:{rel}]->(n{i+1}:{get_label(path.types[i+1])})")
+                pattern_parts.append(
+                    f"-[r{i}:{rel}]-(n{i+1}:{get_label(path.types[i+1])})"
+                )
             pattern = "".join(pattern_parts)
 
             return f"""
@@ -490,11 +528,9 @@ Return JSON."""
             return []
 
     def _generate_answer(
-        self,
-        question: str,
-        subgraph: List[Dict[str, Any]]
+        self, question: str, subgraph: List[Dict[str, Any]]
     ) -> Tuple[List[str], Optional[str]]:
-        """Phase 5: 回答生成（全エンティティを返す）"""
+        """Phase 5: 回答生成"""
 
         if not subgraph:
             return [], None
@@ -511,14 +547,35 @@ Return JSON."""
         # 重複除去
         entities = list(dict.fromkeys(entities))
 
-        # LLMによるフィルタリングは行わず、全エンティティを返す
-        # （パス選択の段階で絞り込みは完了している）
+        # LLMで剪定と自然言語回答生成
+        if entities:
+            llm_with_output = self.llm.with_structured_output(PrunedAnswerResponse)
+            prompt = f"""Given this question and retrieved entities, generate an answer.
+
+Question: {question}
+
+Retrieved entities:
+{json.dumps(entities[:30], indent=2)}
+
+Tasks:
+1. Filter out any irrelevant entities
+2. Generate a natural language answer
+
+Return JSON with relevant_entities and natural_answer."""
+
+            try:
+                result = llm_with_output.invoke(prompt)
+                return result.relevant_entities, result.natural_answer
+            except Exception:
+                pass
+
         return entities, None
 
 
 # =============================================================================
 # Main
 # =============================================================================
+
 
 def main():
     """テスト実行"""

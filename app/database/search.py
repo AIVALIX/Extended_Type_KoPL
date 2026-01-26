@@ -27,12 +27,19 @@ class GraphPathFinder:
       各ホップ先ノードの `type` リストに期待要素が含まれるものだけを採用
     """
 
-    def __init__(self) -> None:
+    def __init__(self, kg_type: str = "primekgqa") -> None:
         s = get_settings()
-        self.graph = Graph(
-            s.NEO4J_URI,
-            auth=(s.NEO4J_USERNAME, s.NEO4J_PASSWORD),
-        )
+        # KGタイプに応じたNeo4j接続を使用
+        if kg_type == "metaqa":
+            import os
+            uri = os.getenv("NEO4J_METAQA_URI", "bolt://neo4j_metaqa:7687")
+            user = os.getenv("NEO4J_METAQA_USER", "neo4j")
+            password = os.getenv("NEO4J_METAQA_PASSWORD", "password")
+        else:
+            uri = s.NEO4J_URI
+            user = s.NEO4J_USERNAME
+            password = s.NEO4J_PASSWORD
+        self.graph = Graph(uri, auth=(user, password))
 
     # ──────────────────────────────────────────────
     #  Public
