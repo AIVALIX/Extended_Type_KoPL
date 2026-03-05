@@ -103,16 +103,22 @@ def build_schema_graph(kg_type: str = "primekgqa") -> KGSchema:
     """スキーマグラフを構築
 
     Args:
-        kg_type: "primekgqa" or "metaqa"
+        kg_type: "primekgqa", "metaqa", or "pcqa"
     """
-    if kg_type == "metaqa":
-        from dataset_construction.schema_metaqa import SCHEMA_GRAPH
-    else:
-        from dataset_construction.schema_v2 import SCHEMA_GRAPH
-
     schema = KGSchema()
 
-    for src, rel, tgt, direction in SCHEMA_GRAPH:
-        schema.add_edge(src, rel, tgt, direction)
+    if kg_type == "metaqa":
+        from dataset_construction.schema_metaqa import SCHEMA_GRAPH
+        for src, rel, tgt, direction in SCHEMA_GRAPH:
+            schema.add_edge(src, rel, tgt, direction)
+    elif kg_type == "pcqa":
+        from dataset_construction.schema_pcqa import SCHEMA_GRAPH
+        for src, rel, tgt, direction in SCHEMA_GRAPH:
+            schema.add_edge(src, rel, tgt, direction)
+    else:
+        # PrimeKGQA: v3スキーマを使用（3要素タプル、方向はデフォルトで"->"）
+        from dataset_construction.schema_v3 import SCHEMA_GRAPH
+        for src, rel, tgt in SCHEMA_GRAPH:
+            schema.add_edge(src, rel, tgt, "->")
 
     return schema

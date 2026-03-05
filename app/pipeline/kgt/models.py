@@ -22,6 +22,8 @@ class QuestionAnalysis:
     tail_entity_type: Optional[str] = None  # T_t: テールエンティティタイプ
     tail_attributes: List[str] = field(default_factory=list)  # T_a: テールエンティティ属性
     head_entity_id: Optional[str] = None  # DBで見つかったエンティティID
+    compound_names: List[str] = field(default_factory=list)  # PcQA: CancerCell複合名リスト
+    compound_search_term: Optional[str] = None  # PcQA: CONTAINS検索用の元エンティティ名（遺伝子名等）
 
 
 @dataclass

@@ -27,6 +27,18 @@ def load_samples(data_path: Path, indices: List[int]) -> List[tuple]:
 
 def get_gold_info(sample: Dict[str, Any]) -> Dict[str, Any]:
     """正解情報を抽出"""
+    # PcQA形式: "answers" フィールド（[{"name": "..."}]）
+    if "answers" in sample and "answer_nodes" not in sample:
+        gold_answers = [a["name"] for a in sample.get("answers", []) if "name" in a]
+        relations = [sample.get("relation")] if sample.get("relation") else []
+        return {
+            "query_type": "one_hop",
+            "relations": relations,
+            "answers": gold_answers,
+            "entity_key": "entity",
+        }
+
+    # PrimeKGQA/MetaQA形式
     gold_answers = [node["name"] for node in sample.get("answer_nodes", [])]
 
     # クエリタイプを検出

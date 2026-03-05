@@ -4,6 +4,9 @@ neo4j
 plugins
 volume
 volume_backup
+volume_metaqa/logs
+volume_pcqa
+app/volume_pcqa
 */.env
 data/test
 data
@@ -20,3 +23,5 @@ metaqa_results_1000
 .env
 *./output
 __pycache__
+docs
+.claude/

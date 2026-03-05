@@ -19,14 +19,106 @@ from dataclasses import dataclass, asdict
 from pydantic import BaseModel, Field
 from tqdm import tqdm
 
-from dataset_construction.schema_v2 import (
-    ONE_HOP_TEMPLATES,
-    TWO_HOP_TEMPLATES,
-    TWO_ANCHOR_INTERSECTION_TEMPLATES,
-    THREE_ANCHOR_INTERSECTION_TEMPLATES,
-    get_cypher_label,
-)
 from core.config import BASEMODEL, get_settings
+
+
+def load_schema(schema_version: str = "v2"):
+    """スキーマバージョンに応じてテンプレートを読み込む"""
+    if schema_version == "v4":
+        from dataset_construction.schema_v4 import (
+            ONE_HOP_TEMPLATES,
+            TWO_HOP_TEMPLATES,
+            TWO_ANCHOR_INTERSECTION_TEMPLATES,
+            THREE_ANCHOR_INTERSECTION_TEMPLATES,
+            get_cypher_label,
+        )
+    elif schema_version == "v3":
+        from dataset_construction.schema_v3 import (
+            ONE_HOP_TEMPLATES,
+            TWO_HOP_TEMPLATES,
+            TWO_ANCHOR_INTERSECTION_TEMPLATES,
+            THREE_ANCHOR_INTERSECTION_TEMPLATES,
+            get_cypher_label,
+        )
+    else:
+        from dataset_construction.schema_v2 import (
+            ONE_HOP_TEMPLATES,
+            TWO_HOP_TEMPLATES,
+            TWO_ANCHOR_INTERSECTION_TEMPLATES,
+            THREE_ANCHOR_INTERSECTION_TEMPLATES,
+            get_cypher_label,
+        )
+    return (
+        ONE_HOP_TEMPLATES,
+        TWO_HOP_TEMPLATES,
+        TWO_ANCHOR_INTERSECTION_TEMPLATES,
+        THREE_ANCHOR_INTERSECTION_TEMPLATES,
+        get_cypher_label,
+    )
+
+
+import re
+
+def is_readable_entity_name(name: str) -> bool:
+    """
+    人間が読める・理解しやすいエンティティ名かどうかを判定
+
+    除外対象:
+    - 長すぎる化学名 (30文字超)
+    - コードネーム (CRA_8696, DB00001など) ※遺伝子名は許可
+    - 括弧だらけの化学名
+    - 数字のみや特殊文字のみ
+    """
+    if not name or len(name.strip()) == 0:
+        return False
+
+    # 長すぎる名前を除外
+    if len(name) > 30:
+        return False
+
+    # 遺伝子名パターンを許可 (BRCA1, TP53, EGFR, ALK, MET, etc.)
+    # 2-6文字の大文字(数字を含んでもよい)は遺伝子名として許可
+    if re.match(r'^[A-Z][A-Z0-9]{1,5}$', name):
+        return True
+
+    # コードネームパターンを除外 (CRA_8696, CHEMBL123456, etc.)
+    # アンダースコアを含む大文字+数字のパターン
+    if re.match(r'^[A-Z]{2,}_\d+$', name):
+        return False
+
+    # DrugBank IDを除外
+    if re.match(r'^DB\d+', name):
+        return False
+
+    # CHEMBL IDを除外
+    if re.match(r'^CHEMBL\d+', name):
+        return False
+
+    # 括弧が多すぎる化学名を除外
+    if name.count('(') > 2 or name.count('[') > 1:
+        return False
+
+    # 数字や特殊文字のみの名前を除外
+    if re.match(r'^[\d\s\-\.,]+$', name):
+        return False
+
+    # 化学式っぽいパターンを除外 (大文字+数字の繰り返しで7文字以上)
+    if len(name) > 6 and re.match(r'^[A-Z][a-z]?\d+([A-Z][a-z]?\d*)+$', name):
+        return False
+
+    return True
+
+
+def filter_samples_by_entity_name(samples: List[Dict], entity_key: str = "anchor_name") -> List[Dict]:
+    """
+    読みやすいエンティティ名のサンプルのみをフィルタリング
+    """
+    filtered = []
+    for sample in samples:
+        name = sample.get(entity_key, "")
+        if is_readable_entity_name(name):
+            filtered.append(sample)
+    return filtered
 
 
 class QuestionResponse(BaseModel):
@@ -53,6 +145,20 @@ def get_neo4j_connection():
     return finder.graph
 
 
+def get_cypher_rel(rel: str) -> str:
+    """リレーション名をCypher用にエスケープ（スペース、ハイフン等）"""
+    if " " in rel or "-" in rel:
+        return f"`{rel}`"
+    return rel
+
+
+def get_cypher_label(node_type: str) -> str:
+    """ノードタイプをCypher用のラベルに変換"""
+    if "/" in node_type:
+        return f"`{node_type}`"
+    return node_type
+
+
 def generate_one_hop_samples(
     graph,
     template: Dict,
@@ -65,10 +171,11 @@ def generate_one_hop_samples(
     src_type, rel, tgt_type = template["path"]
     src_label = get_cypher_label(src_type)
     tgt_label = get_cypher_label(tgt_type)
+    rel_escaped = get_cypher_rel(rel)
 
     # Answer-first: まずAnswerをサンプリングし、逆引きでAnchorを取得
     cypher = f"""
-    MATCH (answer:{tgt_label})<-[r:{rel}]-(anchor:{src_label})
+    MATCH (answer:{tgt_label})<-[r:{rel_escaped}]-(anchor:{src_label})
     WITH anchor, collect(DISTINCT answer)[0..{max_answers}] AS answers
     WHERE size(answers) >= {min_answers} AND size(answers) <= {max_answers}
     RETURN
@@ -107,48 +214,60 @@ def generate_two_hop_samples(
     num_samples: int = 100,
     min_answers: int = 1,
     max_answers: int = 50,
+    max_total_answers: int = 100,
 ) -> List[Dict]:
-    """2-hop サンプルを生成（Answer-first approach）"""
+    """2-hop サンプルを生成（Answer-first approach）
+
+    Args:
+        max_total_answers: 全パス経由での総回答数の上限。
+            これを超えるアンカーは除外する（パイプライン評価時の爆発を防ぐ）
+    """
 
     a_type, rel1, z_type, rel2, x_type = template["path"]
     a_label = get_cypher_label(a_type)
     z_label = get_cypher_label(z_type)
     x_label = get_cypher_label(x_type)
 
-    # Answer-first: Answer(x) -> Mid(z) -> Anchor(a) の順で逆引き
-    cypher = f"""
-    MATCH (x:{x_label})<-[r2:{rel2}]-(z:{z_label})<-[r1:{rel1}]-(a:{a_label})
+    def get_rel(r: str) -> str:
+        """リレーション名をCypher用にエスケープ"""
+        if " " in r or "-" in r:
+            return f"`{r}`"
+        return r
+
+    rel1_escaped = get_rel(rel1)
+    rel2_escaped = get_rel(rel2)
+
+    # Step 1: 全パス経由での総回答数が上限以下のアンカーを特定
+    # パイプラインは全ての中間ノードを経由するため、総回答数でフィルタ
+    cypher_filter = f"""
+    MATCH (a:{a_label})-[r1:{rel1_escaped}]-(z:{z_label})-[r2:{rel2_escaped}]-(x:{x_label})
     WHERE a <> z AND z <> x AND a <> x
-    WITH a, z, collect(DISTINCT x)[0..{max_answers}] AS answers
-    WHERE size(answers) >= {min_answers} AND size(answers) <= {max_answers}
+    WITH a, collect(DISTINCT x) AS all_answers
+    WHERE size(all_answers) >= {min_answers} AND size(all_answers) <= {max_total_answers}
     RETURN
         elementId(a) AS anchor_id,
         a.name AS anchor_name,
         labels(a)[0] AS anchor_type,
-        elementId(z) AS mid_id,
-        z.name AS mid_name,
-        labels(z)[0] AS mid_type,
-        [x IN answers | {{id: elementId(x), name: x.name, type: labels(x)[0]}}] AS answer_nodes
+        [x IN all_answers[0..{max_answers}] | {{id: elementId(x), name: x.name, type: labels(x)[0]}}] AS answer_nodes,
+        size(all_answers) AS total_answer_count
     ORDER BY rand()
     LIMIT {num_samples}
     """
 
     results = []
     try:
-        for record in graph.run(cypher):
+        for record in graph.run(cypher_filter):
             sample = {
                 "query_type": "two_hop",
                 "template_name": template["name"],
                 "anchor_id": record["anchor_id"],
                 "anchor_name": record["anchor_name"],
                 "anchor_type": record["anchor_type"],
-                "mid_id": record["mid_id"],
-                "mid_name": record["mid_name"],
-                "mid_type": record["mid_type"],
                 "rel1": rel1,
                 "rel2": rel2,
                 "answer_nodes": record["answer_nodes"],
                 "answer_count": len(record["answer_nodes"]),
+                "total_answer_count": record["total_answer_count"],
                 "question_templates": template["question_templates"],
             }
             results.append(sample)
@@ -173,10 +292,12 @@ def generate_two_intersection_samples(
     a_label = get_cypher_label(a_type)
     b_label = get_cypher_label(b_type)
     int_label = get_cypher_label(int_type)
+    a_rel_escaped = get_cypher_rel(a_rel)
+    b_rel_escaped = get_cypher_rel(b_rel)
 
     # 共通のAnswerを持つ2つのAnchorを探す
     cypher = f"""
-    MATCH (a:{a_label})-[ra:{a_rel}]->(x:{int_label})<-[rb:{b_rel}]-(b:{b_label})
+    MATCH (a:{a_label})-[ra:{a_rel_escaped}]->(x:{int_label})<-[rb:{b_rel_escaped}]-(b:{b_label})
     WHERE a <> b
     WITH a, b, collect(DISTINCT x)[0..{max_answers}] AS answers
     WHERE size(answers) >= {min_answers} AND size(answers) <= {max_answers}
@@ -234,11 +355,14 @@ def generate_three_intersection_samples(
     b_label = get_cypher_label(b_type)
     c_label = get_cypher_label(c_type)
     int_label = get_cypher_label(int_type)
+    a_rel_escaped = get_cypher_rel(a_rel)
+    b_rel_escaped = get_cypher_rel(b_rel)
+    c_rel_escaped = get_cypher_rel(c_rel)
 
     # 共通のAnswerを持つ3つのAnchorを探す
     cypher = f"""
-    MATCH (a:{a_label})-[ra:{a_rel}]->(x:{int_label})<-[rb:{b_rel}]-(b:{b_label}),
-          (x)<-[rc:{c_rel}]-(c:{c_label})
+    MATCH (a:{a_label})-[ra:{a_rel_escaped}]->(x:{int_label})<-[rb:{b_rel_escaped}]-(b:{b_label}),
+          (x)<-[rc:{c_rel_escaped}]-(c:{c_label})
     WHERE a <> b AND b <> c AND a <> c
     WITH a, b, c, collect(DISTINCT x)[0..{max_answers}] AS answers
     WHERE size(answers) >= {min_answers} AND size(answers) <= {max_answers}
@@ -415,11 +539,17 @@ def paraphrase_questions_parallel(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PrimeKG v2 Dataset Generator")
-    parser.add_argument("--output-dir", type=Path, default=Path("result/dataset_v2"))
+    parser = argparse.ArgumentParser(description="PrimeKG Dataset Generator")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Output directory (default: result/dataset_{schema})")
     parser.add_argument("--num-samples", type=int, default=1000)
     parser.add_argument("--min-answers", type=int, default=1)
     parser.add_argument("--max-answers", type=int, default=50)
+    parser.add_argument(
+        "--max-total-answers",
+        type=int,
+        default=100,
+        help="Max total answers for 2-hop queries (prevents explosion)",
+    )
     parser.add_argument(
         "--query-type",
         type=str,
@@ -450,9 +580,35 @@ def main():
         default=8,
         help="Max worker threads for paraphrasing",
     )
+    parser.add_argument(
+        "--schema",
+        type=str,
+        default="v2",
+        choices=["v2", "v3", "v4"],
+        help="Schema version to use (v3 uses clear relations, v4 adds improved templates and filtering)",
+    )
+    parser.add_argument(
+        "--filter-entities",
+        action="store_true",
+        help="Filter out samples with unreadable entity names (long chemical names, codes, etc.)",
+    )
     args = parser.parse_args()
 
+    # デフォルトの出力ディレクトリを設定
+    if args.output_dir is None:
+        args.output_dir = Path(f"result/dataset_{args.schema}")
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # スキーマを読み込み
+    print(f"Loading schema {args.schema}...")
+    (
+        ONE_HOP_TEMPLATES,
+        TWO_HOP_TEMPLATES,
+        TWO_ANCHOR_INTERSECTION_TEMPLATES,
+        THREE_ANCHOR_INTERSECTION_TEMPLATES,
+        _,
+    ) = load_schema(args.schema)
 
     print("Connecting to Neo4j...")
     graph = get_neo4j_connection()
@@ -479,7 +635,8 @@ def main():
         print("\n=== Generating 2-hop samples ===")
         for template in tqdm(TWO_HOP_TEMPLATES, desc="2-hop templates"):
             samples = generate_two_hop_samples(
-                graph, template, args.num_samples, args.min_answers, args.max_answers
+                graph, template, args.num_samples, args.min_answers, args.max_answers,
+                max_total_answers=args.max_total_answers,
             )
             all_samples["two_hop"].extend(samples)
             print(f"  {template['name']}: {len(samples)} samples")
@@ -535,6 +692,29 @@ def main():
                     sample["question_template"] = template
                     sample["question"] = fill_template(template, anchors)
                     del sample["question_templates"]
+
+    # エンティティ名フィルタリング（オプション）
+    if args.filter_entities:
+        print("\n=== Filtering samples by entity name ===")
+        for query_type, samples in all_samples.items():
+            if samples:
+                original_count = len(samples)
+                # フィルタリング対象のエンティティキーを決定
+                if query_type in ["two_intersection", "three_intersection"]:
+                    # インターセクションは複数アンカーがあるので、すべてをチェック
+                    filtered = []
+                    for sample in samples:
+                        names_to_check = []
+                        for key in ["anchor_a_name", "anchor_b_name", "anchor_c_name"]:
+                            if key in sample:
+                                names_to_check.append(sample[key])
+                        if all(is_readable_entity_name(name) for name in names_to_check):
+                            filtered.append(sample)
+                    all_samples[query_type] = filtered
+                else:
+                    all_samples[query_type] = filter_samples_by_entity_name(samples, "anchor_name")
+                filtered_count = len(all_samples[query_type])
+                print(f"  {query_type}: {original_count} -> {filtered_count} ({original_count - filtered_count} removed)")
 
     # 保存
     print("\n=== Saving results ===")

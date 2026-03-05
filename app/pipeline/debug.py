@@ -9,10 +9,17 @@
   # 直接質問を指定
   python pipeline/debug.py --pipeline extended_type_kopl --question "What diseases are associated with BRCA1?" --entity "BRCA1"
 
+  # KGから動的にリレーションを取得 + LLM reranker
+  python pipeline/debug.py --pipeline extended_type_kopl --data result/dataset_v2/one_hop.jsonl --index 100 --no-schema --reranker llm
+
 対応パイプライン:
   - safe: SAFE Pipeline
   - kgt: KGT Pipeline
   - extended_type_kopl: Extended Type-KoPL Pipeline
+
+オプション:
+  --no-schema: スキーマを使わずKGから動的にリレーションを取得
+  --reranker: パス選択のリランカー (none, llm, hybrid)
 """
 
 from __future__ import annotations
@@ -86,6 +93,8 @@ def debug_kgt(result, gold_info: Optional[Dict[str, Any]] = None):
     print(f"  Head Entity: {result.analysis.head_entity_name}")
     print(f"  Head Type: {result.analysis.head_entity_type}")
     print(f"  Tail Type: {result.analysis.tail_entity_type}")
+    if hasattr(result.analysis, 'compound_names') and result.analysis.compound_names:
+        print(f"  Compound names ({len(result.analysis.compound_names)}): {result.analysis.compound_names[:5]}")
 
     print_header("SCHEMA PATHS")
     print(f"  Total candidates: {len(result.schema_paths)}")
@@ -129,12 +138,11 @@ def debug_extended_type_kopl(result, gold_info: Optional[Dict[str, Any]] = None)
     if result.kopl_program:
         print_header("KOPL PROGRAM")
         print(f"  Operation: {result.kopl_program.op_type}")
+        print(f"  Anchor: {result.kopl_program.anchor_name}")
         print(f"  Relations: {len(result.kopl_program.relations)}")
         for rel in result.kopl_program.relations:
-            if rel.intermediate_type:
-                print(f"    {rel.src_type} -> {rel.intermediate_type} -> {rel.tgt_type}")
-            else:
-                print(f"    {rel.src_type} -> {rel.tgt_type}")
+            hint = f" (hint: {rel.relation_hint})" if rel.relation_hint else ""
+            print(f"    {rel.src_type} -> {rel.tgt_type}{hint}")
         if result.kopl_program.children:
             print(f"  Children: {len(result.kopl_program.children)}")
 
@@ -178,10 +186,16 @@ def run_debug(
     question: str,
     entity_name: Optional[str],
     gold_info: Optional[Dict[str, Any]] = None,
+    no_schema: bool = False,
+    reranker: str = "none",
+    kg_type: str = "primekgqa",
 ):
     """デバッグ実行"""
     print_header("INPUT")
     print(f"  Pipeline: {pipeline_id}")
+    print(f"  KG: {kg_type}")
+    print(f"  Schema mode: {'NO (relations from KG)' if no_schema else 'YES'}")
+    print(f"  Reranker: {reranker}")
     print(f"  Question: {question}")
     print(f"  Entity: {entity_name}")
     if gold_info:
@@ -192,19 +206,23 @@ def run_debug(
     # パイプライン初期化
     if pipeline_id == "safe":
         from pipeline.safe import SAFEPipeline
-        pipeline = SAFEPipeline()
+        pipeline = SAFEPipeline(kg_type=kg_type)
         result = pipeline.run(question=question, entity_name=entity_name)
         debug_safe(result, gold_info)
 
     elif pipeline_id == "kgt":
         from pipeline.kgt import KGTPipeline
-        pipeline = KGTPipeline()
+        pipeline = KGTPipeline(kg_type=kg_type)
         result = pipeline.run(question=question, entity_name=entity_name)
         debug_kgt(result, gold_info)
 
     elif pipeline_id == "extended_type_kopl":
         from pipeline.extended_type_kopl import ExtendedTypeKoPLPipeline
-        pipeline = ExtendedTypeKoPLPipeline()
+        pipeline = ExtendedTypeKoPLPipeline(
+            use_schema_relations=not no_schema,
+            reranker_type=reranker,
+            kg_type=kg_type,
+        )
         result = pipeline.run(question=question, entity_name=entity_name)
         debug_extended_type_kopl(result, gold_info)
 
@@ -227,12 +245,25 @@ def main():
                         help="Direct question input")
     parser.add_argument("--entity", type=str, default=None,
                         help="Entity name for direct question")
+    parser.add_argument("--no-schema", action="store_true",
+                        help="Use relations from KG instead of schema")
+    parser.add_argument("--kg", type=str, default="primekgqa",
+                        choices=["primekgqa", "metaqa", "pcqa"],
+                        help="Knowledge graph type")
+    parser.add_argument("--reranker", type=str, default="none",
+                        choices=["none", "llm", "hybrid"],
+                        help="Reranker type for path selection")
 
     args = parser.parse_args()
 
+    no_schema = getattr(args, 'no_schema', False)
+    reranker = getattr(args, 'reranker', 'none')
+
+    kg_type = args.kg
+
     if args.question:
         # 直接質問を指定
-        run_debug(args.pipeline, args.question, args.entity)
+        run_debug(args.pipeline, args.question, args.entity, no_schema=no_schema, reranker=reranker, kg_type=kg_type)
     elif args.data:
         # データセットから読み込み
         data_path = Path(args.data)
@@ -247,7 +278,7 @@ def main():
             question = sample.get("question", "")
             entity_name = sample.get(gold_info["entity_key"], "")
 
-            run_debug(args.pipeline, question, entity_name, gold_info)
+            run_debug(args.pipeline, question, entity_name, gold_info, no_schema=no_schema, reranker=reranker, kg_type=kg_type)
     else:
         parser.error("Either --data or --question is required")
 

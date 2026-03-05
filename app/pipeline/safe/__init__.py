@@ -13,9 +13,10 @@ from pipeline.safe.models import (
     CandidateSchemaEdge,
     QueryGraph,
     MatchedSubgraph,
+    PartialMatch,
     SAFEResult,
 )
-from pipeline.safe.schema import SchemaGraphWithAPSP, build_schema_with_apsp
+from pipeline.safe.schema import SchemaGraphWithAPSP, CandidateIndex, build_schema_with_apsp
 
 __all__ = [
     "SAFEPipeline",
@@ -24,7 +25,9 @@ __all__ = [
     "CandidateSchemaEdge",
     "QueryGraph",
     "MatchedSubgraph",
+    "PartialMatch",
     "SAFEResult",
     "SchemaGraphWithAPSP",
+    "CandidateIndex",
     "build_schema_with_apsp",
 ]

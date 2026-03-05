@@ -24,81 +24,63 @@ NODE_TYPES = [
 
 # =============================================================================
 # Schema Graph (Source -> Relation -> Target)
+# NOTE: 逆方向リレーション (targeted_by, carrier_for, etc.) は削除
 # =============================================================================
 SCHEMA_GRAPH: List[Tuple[str, str, str, int]] = [
     # anatomy
-    ("anatomy", "absent_gene", "gene/protein", 19887),
-    ("anatomy", "expressed_gene", "gene/protein", 1518203),
-    ("anatomy", "parent_child", "anatomy", 28064),
+    ("anatomy", "absent gene", "gene/protein", 19887),
+    ("anatomy", "expressed gene", "gene/protein", 1518203),
+    ("anatomy", "parent-child", "anatomy", 28064),
 
     # biological_process
-    ("biological_process", "interacted_by", "exposure", 1625),
-    ("biological_process", "interacted_by", "gene/protein", 144805),
-    ("biological_process", "parent_child", "biological_process", 105772),
+    ("biological_process", "parent-child", "biological_process", 105772),
 
     # cellular_component
-    ("cellular_component", "interacted_by", "exposure", 10),
-    ("cellular_component", "interacted_by", "gene/protein", 83402),
-    ("cellular_component", "parent_child", "cellular_component", 9690),
+    ("cellular_component", "parent-child", "cellular_component", 9690),
 
     # disease
-    ("disease", "associated_with", "gene/protein", 80411),
-    ("disease", "contraindicated_for", "drug", 30675),
-    ("disease", "linked_exposure", "exposure", 2304),
-    ("disease", "off_label_drug", "drug", 2568),
-    ("disease", "parent_child", "disease", 64388),
-    ("disease", "phenotype_absent", "effect/phenotype", 1193),
-    ("disease", "phenotype_present", "effect/phenotype", 150317),
-    ("disease", "treated_by", "drug", 9388),
+    ("disease", "linked exposure", "exposure", 2304),
+    ("disease", "parent-child", "disease", 64388),
+    ("disease", "phenotype absent", "effect/phenotype", 1193),
+    ("disease", "phenotype present", "effect/phenotype", 150317),
 
     # drug
     ("drug", "carrier", "gene/protein", 864),
     ("drug", "contraindication", "disease", 30675),
     ("drug", "enzyme", "gene/protein", 5317),
     ("drug", "indication", "disease", 9388),
-    ("drug", "off_label_use", "disease", 2568),
-    ("drug", "side_effect", "effect/phenotype", 64784),
-    ("drug", "synergistic_interaction", "drug", 2672628),
+    ("drug", "off-label use", "disease", 2568),
+    ("drug", "side effect", "effect/phenotype", 64784),
+    ("drug", "synergistic interaction", "drug", 2672628),
     ("drug", "target", "gene/protein", 16380),
     ("drug", "transporter", "gene/protein", 3092),
 
     # effect/phenotype
-    ("effect/phenotype", "caused_by_drug", "drug", 64784),
-    ("effect/phenotype", "disease_with_phenotype", "disease", 150317),
-    ("effect/phenotype", "disease_without_phenotype", "disease", 1193),
-    ("effect/phenotype", "parent_child", "effect/phenotype", 37472),
+    ("effect/phenotype", "parent-child", "effect/phenotype", 37472),
 
     # exposure
-    ("exposure", "interacts_with", "biological_process", 1625),
-    ("exposure", "interacts_with", "cellular_component", 10),
-    ("exposure", "interacts_with", "gene/protein", 1212),
-    ("exposure", "interacts_with", "molecular_function", 45),
-    ("exposure", "linked_to", "disease", 2304),
-    ("exposure", "parent_child", "exposure", 4140),
+    ("exposure", "interacts with", "biological_process", 1625),
+    ("exposure", "interacts with", "cellular_component", 10),
+    ("exposure", "interacts with", "gene/protein", 1212),
+    ("exposure", "interacts with", "molecular_function", 45),
+    ("exposure", "linked to", "disease", 2304),
+    ("exposure", "parent-child", "exposure", 4140),
 
     # gene/protein
-    ("gene/protein", "associated_disease", "disease", 80411),
-    ("gene/protein", "carrier_for", "drug", 864),
-    ("gene/protein", "expression_absent", "anatomy", 19887),
-    ("gene/protein", "expression_present", "anatomy", 1518203),
-    ("gene/protein", "interacted_by", "exposure", 1212),
-    ("gene/protein", "interacts_with", "biological_process", 144805),
-    ("gene/protein", "interacts_with", "cellular_component", 83402),
-    ("gene/protein", "interacts_with", "molecular_function", 69530),
-    ("gene/protein", "interacts_with", "pathway", 42646),
-    ("gene/protein", "metabolized_by", "drug", 5317),
+    ("gene/protein", "associated with", "disease", 80411),
+    ("gene/protein", "expression absent", "anatomy", 19887),
+    ("gene/protein", "expression present", "anatomy", 1518203),
+    ("gene/protein", "interacts with", "biological_process", 144805),
+    ("gene/protein", "interacts with", "cellular_component", 83402),
+    ("gene/protein", "interacts with", "molecular_function", 69530),
+    ("gene/protein", "interacts with", "pathway", 42646),
     ("gene/protein", "ppi", "gene/protein", 642150),
-    ("gene/protein", "targeted_by", "drug", 16380),
-    ("gene/protein", "transported_by", "drug", 3092),
 
     # molecular_function
-    ("molecular_function", "interacted_by", "exposure", 45),
-    ("molecular_function", "interacted_by", "gene/protein", 69530),
-    ("molecular_function", "parent_child", "molecular_function", 27148),
+    ("molecular_function", "parent-child", "molecular_function", 27148),
 
     # pathway
-    ("pathway", "interacted_by", "gene/protein", 42646),
-    ("pathway", "parent_child", "pathway", 5070),
+    ("pathway", "parent-child", "pathway", 5070),
 ]
 
 # =============================================================================
@@ -108,7 +90,7 @@ TWO_HOP_TEMPLATES: List[Dict] = [
     # Drug -> Gene -> Disease パターン
     {
         "name": "drug_target_gene_disease",
-        "path": ("drug", "target", "gene/protein", "associated_disease", "disease"),
+        "path": ("drug", "target", "gene/protein", "associated with", "disease"),
         "question_templates": [
             "What diseases are associated with genes targeted by {anchor}?",
             "Which diseases involve genes that {anchor} targets?",
@@ -117,7 +99,7 @@ TWO_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "drug_enzyme_gene_disease",
-        "path": ("drug", "enzyme", "gene/protein", "associated_disease", "disease"),
+        "path": ("drug", "enzyme", "gene/protein", "associated with", "disease"),
         "question_templates": [
             "What diseases are linked to genes that metabolize {anchor}?",
             "Which diseases are associated with the enzymes that process {anchor}?",
@@ -127,7 +109,7 @@ TWO_HOP_TEMPLATES: List[Dict] = [
     # Disease -> Gene -> Drug パターン
     {
         "name": "disease_gene_drug_target",
-        "path": ("disease", "associated_with", "gene/protein", "targeted_by", "drug"),
+        "path": ("disease", "associated with", "gene/protein", "target", "drug"),
         "question_templates": [
             "What drugs target genes associated with {anchor}?",
             "Which drugs target the genes linked to {anchor}?",
@@ -138,7 +120,7 @@ TWO_HOP_TEMPLATES: List[Dict] = [
     # Gene -> Gene -> Disease パターン (PPI)
     {
         "name": "gene_ppi_gene_disease",
-        "path": ("gene/protein", "ppi", "gene/protein", "associated_disease", "disease"),
+        "path": ("gene/protein", "ppi", "gene/protein", "associated with", "disease"),
         "question_templates": [
             "What diseases are associated with proteins that interact with {anchor}?",
             "Which diseases involve interaction partners of {anchor}?",
@@ -149,48 +131,31 @@ TWO_HOP_TEMPLATES: List[Dict] = [
     # Drug -> Disease -> Phenotype パターン
     {
         "name": "drug_indication_disease_phenotype",
-        "path": ("drug", "indication", "disease", "phenotype_present", "effect/phenotype"),
+        "path": ("drug", "indication", "disease", "phenotype present", "effect/phenotype"),
         "question_templates": [
             "What phenotypes are present in diseases treated by {anchor}?",
             "Which symptoms or phenotypes characterize diseases that {anchor} is indicated for?",
         ],
     },
 
-    # Gene -> Anatomy -> Gene パターン
-    {
-        "name": "gene_expression_anatomy_gene",
-        "path": ("gene/protein", "expression_present", "anatomy", "expressed_gene", "gene/protein"),
-        "question_templates": [
-            "What other genes are expressed in the same tissues as {anchor}?",
-            "Which genes share expression sites with {anchor}?",
-            "Find genes co-expressed with {anchor} in the same anatomical locations.",
-        ],
-    },
+    # NOTE: gene_expression_anatomy_gene は除外（ファンアウトが大きすぎる）
 
     # Gene -> Biological Process -> Gene パターン
     {
         "name": "gene_process_gene",
-        "path": ("gene/protein", "interacts_with", "biological_process", "interacted_by", "gene/protein"),
+        "path": ("gene/protein", "interacts with", "biological_process", "interacts with", "gene/protein"),
         "question_templates": [
             "What genes participate in the same biological processes as {anchor}?",
             "Which genes share biological process involvement with {anchor}?",
         ],
     },
 
-    # Drug -> Side Effect -> Drug パターン
-    {
-        "name": "drug_sideeffect_drug",
-        "path": ("drug", "side_effect", "effect/phenotype", "caused_by_drug", "drug"),
-        "question_templates": [
-            "What other drugs share side effects with {anchor}?",
-            "Which drugs cause similar side effects as {anchor}?",
-        ],
-    },
+    # NOTE: drug_sideeffect_drug は除外（ファンアウトが大きすぎる）
 
     # Exposure -> Disease -> Drug パターン
     {
         "name": "exposure_disease_drug",
-        "path": ("exposure", "linked_to", "disease", "treated_by", "drug"),
+        "path": ("exposure", "linked to", "disease", "indication", "drug"),
         "question_templates": [
             "What drugs treat diseases linked to {anchor} exposure?",
             "Which drugs are used for conditions associated with {anchor}?",
@@ -222,7 +187,7 @@ ONE_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "drug_side_effects",
-        "path": ("drug", "side_effect", "effect/phenotype"),
+        "path": ("drug", "side effect", "effect/phenotype"),
         "question_templates": [
             "What are the side effects of {anchor}?",
             "Which adverse effects are associated with {anchor}?",
@@ -230,7 +195,7 @@ ONE_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "gene_diseases",
-        "path": ("gene/protein", "associated_disease", "disease"),
+        "path": ("gene/protein", "associated with", "disease"),
         "question_templates": [
             "What diseases are associated with {anchor}?",
             "Which diseases involve {anchor}?",
@@ -239,7 +204,7 @@ ONE_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "gene_pathways",
-        "path": ("gene/protein", "interacts_with", "pathway"),
+        "path": ("gene/protein", "interacts with", "pathway"),
         "question_templates": [
             "What pathways does {anchor} participate in?",
             "Which biological pathways involve {anchor}?",
@@ -247,7 +212,7 @@ ONE_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "gene_expression",
-        "path": ("gene/protein", "expression_present", "anatomy"),
+        "path": ("gene/protein", "expression present", "anatomy"),
         "question_templates": [
             "Where is {anchor} expressed?",
             "In which tissues or organs is {anchor} expressed?",
@@ -256,7 +221,7 @@ ONE_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "disease_phenotypes",
-        "path": ("disease", "phenotype_present", "effect/phenotype"),
+        "path": ("disease", "phenotype present", "effect/phenotype"),
         "question_templates": [
             "What are the phenotypes of {anchor}?",
             "Which symptoms characterize {anchor}?",
@@ -265,7 +230,7 @@ ONE_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "disease_genes",
-        "path": ("disease", "associated_with", "gene/protein"),
+        "path": ("disease", "associated with", "gene/protein"),
         "question_templates": [
             "What genes are associated with {anchor}?",
             "Which genes are implicated in {anchor}?",
@@ -273,7 +238,7 @@ ONE_HOP_TEMPLATES: List[Dict] = [
     },
     {
         "name": "disease_drugs",
-        "path": ("disease", "treated_by", "drug"),
+        "path": ("disease", "indication", "drug"),
         "question_templates": [
             "What drugs are used to treat {anchor}?",
             "Which medications are indicated for {anchor}?",
@@ -306,7 +271,7 @@ TWO_ANCHOR_INTERSECTION_TEMPLATES: List[Dict] = [
     },
     {
         "name": "genes_common_disease",
-        "anchors": [("gene/protein", "associated_disease"), ("gene/protein", "associated_disease")],
+        "anchors": [("gene/protein", "associated with"), ("gene/protein", "associated with")],
         "intersection_type": "disease",
         "question_templates": [
             "What diseases are associated with both {anchor_a} and {anchor_b}?",
@@ -324,7 +289,7 @@ TWO_ANCHOR_INTERSECTION_TEMPLATES: List[Dict] = [
     },
     {
         "name": "drugs_common_side_effect",
-        "anchors": [("drug", "side_effect"), ("drug", "side_effect")],
+        "anchors": [("drug", "side effect"), ("drug", "side effect")],
         "intersection_type": "effect/phenotype",
         "question_templates": [
             "What side effects are shared by {anchor_a} and {anchor_b}?",
@@ -333,7 +298,7 @@ TWO_ANCHOR_INTERSECTION_TEMPLATES: List[Dict] = [
     },
     {
         "name": "genes_common_pathway",
-        "anchors": [("gene/protein", "interacts_with"), ("gene/protein", "interacts_with")],
+        "anchors": [("gene/protein", "interacts with"), ("gene/protein", "interacts with")],
         "intersection_type": "pathway",
         "question_templates": [
             "What pathways involve both {anchor_a} and {anchor_b}?",
@@ -342,7 +307,7 @@ TWO_ANCHOR_INTERSECTION_TEMPLATES: List[Dict] = [
     },
     {
         "name": "diseases_common_gene",
-        "anchors": [("disease", "associated_with"), ("disease", "associated_with")],
+        "anchors": [("disease", "associated with"), ("disease", "associated with")],
         "intersection_type": "gene/protein",
         "question_templates": [
             "What genes are associated with both {anchor_a} and {anchor_b}?",
@@ -351,7 +316,7 @@ TWO_ANCHOR_INTERSECTION_TEMPLATES: List[Dict] = [
     },
     {
         "name": "drug_disease_common_gene",
-        "anchors": [("drug", "target"), ("disease", "associated_with")],
+        "anchors": [("drug", "target"), ("disease", "associated with")],
         "intersection_type": "gene/protein",
         "question_templates": [
             "What genes are both targeted by {anchor_a} and associated with {anchor_b}?",
@@ -372,7 +337,7 @@ THREE_ANCHOR_INTERSECTION_TEMPLATES: List[Dict] = [
     },
     {
         "name": "three_genes_common_disease",
-        "anchors": [("gene/protein", "associated_disease"), ("gene/protein", "associated_disease"), ("gene/protein", "associated_disease")],
+        "anchors": [("gene/protein", "associated with"), ("gene/protein", "associated with"), ("gene/protein", "associated with")],
         "intersection_type": "disease",
         "question_templates": [
             "What diseases are associated with {anchor_a}, {anchor_b}, and {anchor_c}?",
@@ -381,7 +346,7 @@ THREE_ANCHOR_INTERSECTION_TEMPLATES: List[Dict] = [
     },
     {
         "name": "three_genes_common_pathway",
-        "anchors": [("gene/protein", "interacts_with"), ("gene/protein", "interacts_with"), ("gene/protein", "interacts_with")],
+        "anchors": [("gene/protein", "interacts with"), ("gene/protein", "interacts with"), ("gene/protein", "interacts with")],
         "intersection_type": "pathway",
         "question_templates": [
             "What pathways involve {anchor_a}, {anchor_b}, and {anchor_c}?",

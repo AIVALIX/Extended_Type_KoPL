@@ -8,8 +8,9 @@ SAFE (Semantic-Aware Subgraph Retrieval Framework) Pipeline
 
 from __future__ import annotations
 
+import heapq
 import os
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -21,10 +22,16 @@ from pipeline.safe.models import (
     CandidateSchemaEdge,
     QueryGraph,
     MatchedSubgraph,
+    PartialMatch,
     SAFEResult,
     PseudoQueryGraphResponse,
 )
-from pipeline.safe.schema import SchemaGraphWithAPSP, build_schema_with_apsp
+from pipeline.safe.schema import (
+    SchemaGraphWithAPSP,
+    CandidateIndex,
+    build_schema_with_apsp,
+    build_schema_from_kg,
+)
 
 
 class SAFEPipeline:
@@ -37,8 +44,12 @@ class SAFEPipeline:
         k_schema: int = 3,  # 候補スキーマエッジ数
         k_qg: int = 5,  # 候補クエリグラフ数
         k_retrieval: int = 10,  # 検索結果数
+        k_sim_ent: int = 3,  # SimEnt候補数（論文デフォルト）
+        k_sim_rel: int = 10,  # SimRel候補数
+        k_sim_typ: int = 8,  # SimTyp候補数
         delta: int = 1,  # エッジ距離閾値
         kg_type: str = "primekgqa",
+        use_schema_relations: bool = True,
     ):
         if not os.getenv("OPENAI_API_KEY"):
             settings = get_settings()
@@ -51,20 +62,84 @@ class SAFEPipeline:
         self.embeddings = OpenAIEmbeddings(model=embedding_model)
 
         self.kg_type = kg_type
-        self.schema = build_schema_with_apsp(kg_type)
-        self.schema.compute_edge_embeddings(self.embeddings)
-
+        self.use_schema_relations = use_schema_relations
         self.finder = GraphPathFinder(kg_type=kg_type)
+
+        if use_schema_relations:
+            self.schema = build_schema_with_apsp(kg_type)
+        else:
+            self.schema = build_schema_from_kg(self.finder)
+
+        self.schema.compute_edge_embeddings(self.embeddings)
 
         self.k_schema = k_schema
         self.k_qg = k_qg
         self.k_retrieval = k_retrieval
+        self.k_sim_ent = k_sim_ent
+        self.k_sim_rel = k_sim_rel
+        self.k_sim_typ = k_sim_typ
         self.delta = delta
 
-    def run(self, question: str, entity_name: Optional[str] = None) -> SAFEResult:
+        # CandidateIndex の構築 (SimEnt/SimRel/SimTyp用)
+        self.candidate_index = CandidateIndex(self.embeddings)
+        all_relations = sorted({e.relation for e in self.schema.edges})
+        all_types = sorted(self.schema.types)
+        self.candidate_index.build_relation_index(all_relations)
+        self.candidate_index.build_type_index(all_types)
+
+        # SimEnt: エンティティインデックス構築（.npzファイル → フォールバックでAPI呼び出し）
+        from pipeline.safe.precompute_entity_embeddings import get_cache_path
+        npz_path = get_cache_path(kg_type)
+        if npz_path.exists():
+            data = np.load(npz_path)
+            ent_names = data["names"].tolist()
+            ent_vecs = data["vecs"]  # 2D array (N, dim) をそのまま渡す（コピー回避）
+            self.candidate_index.load_entity_index(ent_names, ent_vecs)
+        else:
+            all_entity_names = self.finder.get_all_entity_names()
+            self.candidate_index.build_entity_index(all_entity_names)
+
+        # キャッシュ（run()呼び出しごとにクリア）
+        self._adj_rel_cache: Dict[str, List[str]] = {}
+        self._cand_node_cache: Dict[Tuple[str, str], List[Tuple[str, List[str]]]] = {}
+        self._entity_labels_cache: Dict[str, List[str]] = {}
+
+    def run(self, question: str, entity_name: Optional[str] = None, n_gold: int = 0) -> SAFEResult:
         """パイプライン実行"""
+        # キャッシュクリア
+        self._adj_rel_cache.clear()
+        self._cand_node_cache.clear()
+        self._entity_labels_cache.clear()
+
         log = []
         log.append(f"Question: {question}")
+
+        # PcQA: CancerCell複合名マッチング
+        if self.kg_type == "pcqa" and entity_name:
+            # Case-insensitive entity type lookup
+            entity_type = None
+            labels = self.finder.get_entity_labels(entity_name)
+            if not labels:
+                # Try case-insensitive lookup
+                query = """
+                MATCH (n) WHERE toLower(n.name) = toLower($name)
+                RETURN labels(n) AS labels LIMIT 1
+                """
+                rows = self.finder.graph.run(query, name=entity_name).data()
+                if rows:
+                    labels = rows[0]["labels"]
+            if labels:
+                filtered = [l for l in labels if l not in ("_Entity", "Entity")]
+                entity_type = filtered[0] if filtered else None
+            if entity_type in ("Genesymbol", "Fusion"):
+                from pipeline.common.pcqa import resolve_pcqa_compound_entity
+                compound = resolve_pcqa_compound_entity(
+                    self.llm, self.finder, question, entity_name, entity_type
+                )
+                if compound:
+                    compound_name, compound_type, compound_names = compound
+                    log.append(f"  PcQA CancerCell resolved: {entity_name} -> {compound_name} ({compound_type})")
+                    entity_name = compound_name
 
         # Step 1: LLMで擬似クエリグラフを生成
         log.append("Phase 1: Generate Pseudo Query Graph")
@@ -101,14 +176,20 @@ class SAFEPipeline:
         best_qg = candidate_qgs[0]
         log.append(f"  Best QG distance: {best_qg.total_distance:.4f}")
 
-        # Step 3: Ranked Semantic Subgraph Matching
-        log.append("Phase 3: Subgraph Matching")
-        matched_subgraphs = self._subgraph_matching(best_qg, pseudo_edges)
-        log.append(f"  Found {len(matched_subgraphs)} matched subgraphs")
+        # Step 3: Cypher Execution (primary) -> Algorithm 2 (fallback)
+        log.append("Phase 3: Cypher Execution")
+        answer_entities = self._cypher_execution(best_qg, pseudo_edges)
+        log.append(f"  Cypher returned {len(answer_entities)} answers")
 
-        # 回答エンティティを抽出
-        answer_entities = self._extract_answers(matched_subgraphs, pseudo_edges)
-        log.append(f"  Extracted {len(answer_entities)} answer entities")
+        matched_subgraphs = []
+        if not answer_entities:
+            # Fallback: Algorithm 2
+            log.append("  Cypher returned 0 results, falling back to Algorithm 2")
+            k = max(self.k_retrieval, n_gold) if n_gold > 0 else self.k_retrieval
+            matched_subgraphs = self._subgraph_matching(best_qg, pseudo_edges, k=k)
+            log.append(f"  Algorithm 2 found {len(matched_subgraphs)} matched subgraphs")
+            answer_entities = self._extract_answers(matched_subgraphs, pseudo_edges)
+            log.append(f"  Extracted {len(answer_entities)} answer entities")
 
         return SAFEResult(
             question=question,
@@ -121,44 +202,48 @@ class SAFEPipeline:
         )
 
     def _get_prompt_examples(self) -> str:
-        """KGタイプに応じたプロンプト例を返す"""
+        """KGタイプに応じたプロンプト例を返す（3例のみ）"""
         if self.kg_type == "metaqa":
             return """Examples:
 
-1. One-hop: "What movies did Tom Hanks star in?" (Tom Hanks is Person)
+1. 1-hop: "Who directed Titanic?"
 [
-  {{"src_node": "Tom Hanks", "src_type": "Person", "relation": "starred in", "tgt_node": "?", "tgt_type": "Movie", "is_anchor": true}}
+  {{"src_node": "Titanic", "src_type": "Movie", "relation": "directed by", "tgt_node": "?", "tgt_type": "Person", "is_anchor": true}}
 ]
 
-2. Two-hop: "Who directed the movies that Tom Hanks starred in?" (Tom Hanks is Person)
+2. 2-hop: "Who directed the movies that Tom Hanks starred in?"
 [
   {{"src_node": "Tom Hanks", "src_type": "Person", "relation": "starred in", "tgt_node": "?", "tgt_type": "Movie", "is_anchor": true}},
   {{"src_node": "?", "src_type": "Movie", "relation": "directed by", "tgt_node": "?", "tgt_type": "Person", "is_anchor": false}}
 ]
 
-3. One-hop: "What year was Titanic released?" (Titanic is Movie)
+3. 3-hop: "Who starred in the movies written by the writers of The Matrix?"
 [
-  {{"src_node": "Titanic", "src_type": "Movie", "relation": "released in", "tgt_node": "?", "tgt_type": "Date", "is_anchor": true}}
-]"""
+  {{"src_node": "The Matrix", "src_type": "Movie", "relation": "written by", "tgt_node": "?", "tgt_type": "Person", "is_anchor": true}},
+  {{"src_node": "?", "src_type": "Person", "relation": "wrote", "tgt_node": "?", "tgt_type": "Movie", "is_anchor": false}},
+  {{"src_node": "?", "src_type": "Movie", "relation": "starred by", "tgt_node": "?", "tgt_type": "Person", "is_anchor": false}}
+]
+
+IMPORTANT: Build the path from anchor entity to final answer. Each edge = one hop."""
         else:
             return """Examples:
 
-1. One-hop: "What diseases are associated with BRCA1?" (BRCA1 is gene/protein)
+1. 1-hop: "What diseases is Metformin indicated for?"
 [
-  {{"src_node": "BRCA1", "src_type": "gene/protein", "relation": "associated with", "tgt_node": "?", "tgt_type": "disease", "is_anchor": true}}
+  {{"src_node": "Metformin", "src_type": "drug", "relation": "indicated for", "tgt_node": "?", "tgt_type": "disease", "is_anchor": true}}
 ]
 
-2. Two-hop: "Which diseases are linked to genes targeted by Tacrolimus?" (Tacrolimus is drug)
+2. 2-hop: "What phenotypes are present in diseases treated by Aspirin?"
 [
-  {{"src_node": "Tacrolimus", "src_type": "drug", "relation": "targets", "tgt_node": "?", "tgt_type": "gene/protein", "is_anchor": true}},
-  {{"src_node": "?", "src_type": "gene/protein", "relation": "associated with", "tgt_node": "?", "tgt_type": "disease", "is_anchor": false}}
+  {{"src_node": "Aspirin", "src_type": "drug", "relation": "indicated for", "tgt_node": "?", "tgt_type": "disease", "is_anchor": true}},
+  {{"src_node": "?", "src_type": "disease", "relation": "has phenotype", "tgt_node": "?", "tgt_type": "effect/phenotype", "is_anchor": false}}
 ]
 
-3. Two-hop reverse: "Which drugs target genes linked to heart failure?" (heart failure is disease)
+3. Intersection: "What genes are targeted by both Aspirin and Ibuprofen?"
 [
-  {{"src_node": "heart failure", "src_type": "disease", "relation": "associated with", "tgt_node": "?", "tgt_type": "gene/protein", "is_anchor": true}},
-  {{"src_node": "?", "src_type": "gene/protein", "relation": "targeted by", "tgt_node": "?", "tgt_type": "drug", "is_anchor": false}}
-]"""
+  {{"src_node": "Aspirin", "src_type": "drug", "relation": "targets", "tgt_node": "?", "tgt_type": "gene/protein", "is_anchor": true}},
+  {{"src_node": "Ibuprofen", "src_type": "drug", "relation": "targets", "tgt_node": "?", "tgt_type": "gene/protein", "is_anchor": true}}
+]\""""
 
     def _generate_pseudo_query_graph(
         self,
@@ -208,7 +293,6 @@ Return JSON with "edges" key containing the list."""
             return edges
         except Exception as e:
             print(f"Error generating pseudo query graph: {e}")
-            # フォールバック: 単純なエッジを生成
             if entity_name:
                 return [PseudoEdge(
                     src_node=entity_name,
@@ -226,7 +310,6 @@ Return JSON with "edges" key containing the list."""
     ) -> List[QueryGraph]:
         """ADJ: スキーマレベルでの補正 (Algorithm 1)"""
 
-        # Step 1: 各擬似エッジに対して候補スキーマエッジを選定
         candidates_per_edge: List[List[CandidateSchemaEdge]] = []
 
         for p_edge in pseudo_edges:
@@ -236,11 +319,8 @@ Return JSON with "edges" key containing the list."""
         if not candidates_per_edge or not all(candidates_per_edge):
             return []
 
-        # Step 2: 距離によるエッジ結合
-        # 全組み合わせを探索し、エッジ間距離が閾値以下のものを選択
         query_graphs = self._match_sg(pseudo_edges, candidates_per_edge, 0, [], 0.0)
 
-        # スコア順にソート
         query_graphs.sort(key=lambda qg: qg.total_distance)
 
         return query_graphs[:self.k_qg]
@@ -251,21 +331,17 @@ Return JSON with "edges" key containing the list."""
     ) -> List[CandidateSchemaEdge]:
         """候補スキーマエッジを検索"""
 
-        # 擬似エッジをテキスト化してベクトル化
         pseudo_text = f"{pseudo_edge.src_type} {pseudo_edge.relation} {pseudo_edge.tgt_type}"
         pseudo_vec = np.array(self.embeddings.embed_query(pseudo_text))
 
-        # 全スキーマエッジとの距離を計算
         distances = []
         for schema_edge in self.schema.edges:
             if schema_edge.embedding is not None:
                 dist = np.linalg.norm(pseudo_vec - schema_edge.embedding)
                 distances.append((schema_edge, dist))
 
-        # 距離順にソート
         distances.sort(key=lambda x: x[1])
 
-        # 上位k_schema個を返す
         return [
             CandidateSchemaEdge(schema_edge=se, distance=d)
             for se, d in distances[:self.k_schema]
@@ -281,7 +357,6 @@ Return JSON with "edges" key containing the list."""
     ) -> List[QueryGraph]:
         """再帰的にスキーマエッジをマッチング"""
 
-        # 全エッジをマッチし終わったら結果を返す
         if idx >= len(pseudo_edges):
             return [QueryGraph(
                 edges=current_matches.copy(),
@@ -291,14 +366,12 @@ Return JSON with "edges" key containing the list."""
         results = []
 
         for candidate in candidates_per_edge[idx]:
-            # エッジ間距離をチェック
             if current_matches:
                 last_schema_edge = current_matches[-1][0]
                 edge_dist = self.schema.get_edge_distance(last_schema_edge, candidate.schema_edge)
                 if edge_dist > self.delta:
-                    continue  # 閾値を超えたらスキップ
+                    continue
 
-            # 再帰的に次のエッジをマッチ
             new_matches = current_matches + [(candidate.schema_edge, pseudo_edges[idx])]
             new_distance = current_distance + candidate.distance
 
@@ -313,226 +386,488 @@ Return JSON with "edges" key containing the list."""
 
         return results
 
+    # ──────────────────────────────────────────────
+    #  Algorithm 2: Ranked Semantic Subgraph Matching
+    # ──────────────────────────────────────────────
+
+    def _cached_adj_rels(self, entity_name: str) -> List[str]:
+        """get_adjacent_relations結果をキャッシュ"""
+        if entity_name not in self._adj_rel_cache:
+            self._adj_rel_cache[entity_name] = self.finder.get_adjacent_relations(entity_name)
+        return self._adj_rel_cache[entity_name]
+
+    def _cached_cand_nodes(self, entity_name: str, relation: str) -> List[Tuple[str, List[str]]]:
+        """get_candidate_nodes結果をキャッシュ（ラベルキャッシュも同時に構築）"""
+        key = (entity_name, relation)
+        if key not in self._cand_node_cache:
+            results = self.finder.get_candidate_nodes(entity_name, relation)
+            self._cand_node_cache[key] = results
+            # ラベルキャッシュにも格納
+            for name, labels in results:
+                if name and name not in self._entity_labels_cache:
+                    self._entity_labels_cache[name] = labels
+        return self._cand_node_cache[key]
+
+    def _cached_entity_labels(self, entity_name: str) -> List[str]:
+        """エンティティラベルをキャッシュ付きで取得"""
+        if entity_name not in self._entity_labels_cache:
+            self._entity_labels_cache[entity_name] = self.finder.get_entity_labels(entity_name)
+        return self._entity_labels_cache[entity_name]
+
+    def _build_dfs_edge_order(
+        self,
+        query_graph: QueryGraph,
+        pseudo_edges: List[PseudoEdge],
+    ) -> List[Tuple[str, str, str, SchemaEdge, PseudoEdge]]:
+        """QueryGraphのエッジをDFS順に並べ替え（anchor起点）
+
+        "?"変数を一意にリネーム: チェーン接続を保ちつつ衝突を防ぐ。
+        例: 2-hop → Edge0: src="Aspirin", tgt="?_0"
+                    Edge1: src="?_0", tgt="?_1"
+
+        Returns:
+            List of (src_var, query_relation, tgt_var, schema_edge, pseudo_edge)
+        """
+        edge_order = []
+        var_counter = 0
+        prev_tgt_var: Optional[str] = None
+
+        for schema_edge, pseudo_edge in query_graph.edges:
+            src_var = pseudo_edge.src_node
+            tgt_var = pseudo_edge.tgt_node
+            query_rel = schema_edge.relation  # 論文: r_Q は Q_G のスキーマ関係
+
+            # src が "?" の場合、前エッジの tgt と同じ変数（チェーン接続）
+            if src_var == "?" and prev_tgt_var is not None:
+                src_var = prev_tgt_var
+
+            # tgt が "?" の場合、一意の変数名を割り当て
+            if tgt_var == "?":
+                tgt_var = f"?_{var_counter}"
+                var_counter += 1
+
+            prev_tgt_var = tgt_var
+            edge_order.append((src_var, query_rel, tgt_var, schema_edge, pseudo_edge))
+
+        return edge_order
+
     def _subgraph_matching(
         self,
         query_graph: QueryGraph,
-        pseudo_edges: List[PseudoEdge]
+        pseudo_edges: List[PseudoEdge],
+        k: Optional[int] = None,
     ) -> List[MatchedSubgraph]:
-        """Ranked Semantic Subgraph Matching (Algorithm 2)"""
+        """Ranked Semantic Subgraph Matching (Algorithm 2)
 
-        # アンカーノードを全て特定
+        Priority queueベースの実装:
+        1. アンカー特定、DFSエッジ順序構築
+        2. Priority queue初期化（アンカーマッピングのみ）
+        3. While queue not empty:
+           a. Pop最小距離のPartialMatch
+           b. 完了チェック → final_resultsに追加
+           c. 次エッジ取得
+           d. AdjRel ∩ SimRel で関係候補
+           e. 各関係候補について GetCandNode でノード候補取得
+           f. SimTyp check + 枝刈り → 新PartialMatchをpush
+        4. Return top-k results
+        """
+        if k is None:
+            k = self.k_retrieval
+
+        # アンカーノードを特定
         anchors = []
         for schema_edge, pseudo_edge in query_graph.edges:
             if pseudo_edge.src_node != "?" and pseudo_edge.src_node not in [a[0] for a in anchors]:
                 anchors.append((pseudo_edge.src_node, schema_edge.src_type, schema_edge))
 
-        # 単一アンカーの場合
         if not anchors:
             return []
 
-        anchor_name, anchor_type, _ = anchors[0]
+        anchor_name = anchors[0][0]
 
-        # マルチホップ検索
-        matched_subgraphs = self._multi_hop_search(
-            query_graph,
-            anchor_name,
-            anchor_type,
-        )
+        # DFSエッジ順序構築
+        edge_order = self._build_dfs_edge_order(query_graph, pseudo_edges)
+        total_edges = len(edge_order)
+
+        if total_edges == 0:
+            return []
+
+        # SimRelの候補関係（各クエリ関係に対して事前計算、距離付き）
+        sim_rel_cache: Dict[str, Dict[str, float]] = {}
+        for _, query_rel, _, _, _ in edge_order:
+            if query_rel not in sim_rel_cache:
+                sim_rels = self.candidate_index.sim_rel(query_rel, k=self.k_sim_rel)
+                sim_rel_cache[query_rel] = {r: d for r, d in sim_rels}
+
+        # SimTypの候補タイプセット（各スキーマタイプに対して事前計算）
+        sim_typ_cache: Dict[str, Set[str]] = {}
+        for _, _, _, schema_edge, _ in edge_order:
+            tgt_type = schema_edge.tgt_type
+            if tgt_type and tgt_type not in sim_typ_cache:
+                sim_typs = self.candidate_index.sim_typ(tgt_type, k=self.k_sim_typ)
+                sim_typ_cache[tgt_type] = {t for t, _ in sim_typs}
+
+        # Priority queue初期化（SimEnt: アンカーエンティティのtop-k候補）
+        pq: List[Tuple[float, int, PartialMatch]] = []
+        counter = 0
+        sim_ents = self.candidate_index.sim_ent(anchor_name, k=self.k_sim_ent)
+        for ent_name, ent_dist in sim_ents:
+            initial_match = PartialMatch(
+                node_mapping={anchor_name: ent_name},
+                edge_mapping=[],
+                current_distance=ent_dist,
+                edges_matched=0,
+            )
+            heapq.heappush(pq, (ent_dist, counter, initial_match))
+            counter += 1
+
+        final_results: List[MatchedSubgraph] = []
+        max_iterations = 50000
+        iterations = 0
+
+        # top-kの最悪スコアを追跡（枝刈り用）
+        worst_score = float('inf')
+
+        while pq and iterations < max_iterations:
+            iterations += 1
+            dist, _, pm = heapq.heappop(pq)
+
+            # 枝刈り: 既にk個の結果があり、このdistがworst以上なら打ち切り
+            if len(final_results) >= k and dist >= worst_score:
+                continue
+
+            # 完了チェック
+            if pm.edges_matched >= total_edges:
+                subgraph = MatchedSubgraph(
+                    nodes=dict(pm.node_mapping),
+                    edges=list(pm.edge_mapping),
+                    score=pm.current_distance,
+                )
+                final_results.append(subgraph)
+                # worst_score更新
+                if len(final_results) >= k:
+                    worst_score = max(sg.score for sg in final_results)
+                continue
+
+            # 次エッジ取得
+            edge_idx = pm.edges_matched
+            src_var, query_rel, tgt_var, schema_edge, pseudo_edge = edge_order[edge_idx]
+
+            # src_varからマッピング済みエンティティを取得
+            # src_varが既にマッピングされている場合はそのエンティティを使う
+            # マッピングされていない場合は、前のエッジのtgt_varのマッピングを使う
+            src_entity = pm.node_mapping.get(src_var)
+            if src_entity is None:
+                # src_varが未マッピング → 前エッジのチェーン接続
+                # edge_orderは順番なので、前のtgt_varがこのsrc_varに対応する可能性がある
+                # 全マッピングから探す
+                for var, entity in pm.node_mapping.items():
+                    if var == src_var:
+                        src_entity = entity
+                        break
+                if src_entity is None:
+                    continue  # マッピング不可
+
+            # AdjRel: このエンティティに隣接する全関係
+            adj_rels = set(self._cached_adj_rels(src_entity))
+
+            # SimRel: クエリ関係に類似するKG関係（距離付き）
+            sim_rels = sim_rel_cache.get(query_rel, {})
+
+            # 候補関係 C_r = AdjRel ∩ SimRel（論文通り、フォールバックなし）
+            candidate_rels = adj_rels & set(sim_rels.keys())
+
+            if not candidate_rels:
+                continue  # 候補なし → この部分マッチは行き止まり
+
+            # tgt_varの期待タイプ（スキーマから）
+            tgt_type = schema_edge.tgt_type
+            sim_typs = sim_typ_cache.get(tgt_type, set()) if tgt_type else set()
+
+            for r_g in candidate_rels:
+                # d_r: リレーション距離（SimRelキャッシュから取得、再計算回避）
+                d_r = sim_rels.get(r_g, self.candidate_index.sem_dist_rel(query_rel, r_g))
+
+                # このエンティティからr_gで到達可能なノード候補
+                cand_nodes = self._cached_cand_nodes(src_entity, r_g)
+
+                for node_name, labels in cand_nodes:
+                    if node_name is None:
+                        continue
+
+                    # 一貫性チェック: 既にマッピングされた変数との矛盾防止
+                    existing = pm.node_mapping.get(tgt_var)
+                    if existing is not None and existing != node_name:
+                        continue
+
+                    # サイクル防止: 同じエンティティが複数変数にマッピングされるのを防ぐ
+                    if node_name in pm.node_mapping.values() and existing is None:
+                        continue
+
+                    # SimTyp check: tgt_typeが指定されていればラベルフィルタ
+                    if tgt_type and sim_typs:
+                        filtered_labels = [l for l in labels if l in sim_typs]
+                        if not filtered_labels and labels:
+                            continue
+
+                    # SemDist: 分解距離（論文準拠）
+                    # d_e = d_r + d_node
+                    # d_r = ||emb(r_Q) - emb(r_G)||₂
+                    # d_node = min_{t ∈ type(u'_G)} ||emb(type(u'_Q)) - emb(t)||₂
+                    tgt_schema_type = schema_edge.tgt_type
+                    d_node = self.candidate_index.sem_dist_node(tgt_schema_type, labels)
+                    d_e = d_r + d_node
+
+                    new_dist = pm.current_distance + d_e
+
+                    # 枝刈り
+                    if len(final_results) >= k and new_dist >= worst_score:
+                        continue
+
+                    # 新しいPartialMatchを作成
+                    new_mapping = dict(pm.node_mapping)
+                    new_mapping[tgt_var] = node_name
+                    new_edges = list(pm.edge_mapping)
+                    new_edges.append((src_entity, r_g, node_name))
+
+                    new_pm = PartialMatch(
+                        node_mapping=new_mapping,
+                        edge_mapping=new_edges,
+                        current_distance=new_dist,
+                        edges_matched=pm.edges_matched + 1,
+                    )
+                    heapq.heappush(pq, (new_dist, counter, new_pm))
+                    counter += 1
 
         # スコア順にソート
-        matched_subgraphs.sort(key=lambda sg: sg.score)
+        final_results.sort(key=lambda sg: sg.score)
 
-        return matched_subgraphs
+        # フォールバック: Algorithm 2で結果が0件の場合、旧Cypherベースで検索
+        if not final_results:
+            final_results = self._fallback_cypher_search(query_graph, pseudo_edges)
 
-    def _multi_hop_search(
+        return final_results[:k]
+
+    def _resolve_anchor_type(
+        self,
+        schema_edge: "SchemaEdge",
+        pseudo_edge: PseudoEdge,
+    ) -> str:
+        """アンカーエンティティに対応するスキーマエッジ側のタイプを決定"""
+        pe_type = pseudo_edge.src_type.lower()
+        if pe_type == schema_edge.src_type.lower():
+            return schema_edge.src_type
+        elif pe_type == schema_edge.tgt_type.lower():
+            return schema_edge.tgt_type
+        # フォールバック: Neo4jから実際のラベルを取得
+        labels = self.finder.get_entity_labels(pseudo_edge.src_node)
+        if labels:
+            labels_lower = [l.lower() for l in labels]
+            if schema_edge.src_type.lower() in labels_lower:
+                return schema_edge.src_type
+            if schema_edge.tgt_type.lower() in labels_lower:
+                return schema_edge.tgt_type
+        return schema_edge.src_type
+
+    def _cypher_execution(
         self,
         query_graph: QueryGraph,
-        anchor_name: str,
-        anchor_type: str,
-    ) -> List[MatchedSubgraph]:
-        """マルチホップパスを検索（両方向対応）"""
+        pseudo_edges: List[PseudoEdge],
+    ) -> List[str]:
+        """ADJ選定のスキーマパスからCypherクエリを構築・実行し、回答エンティティを返す"""
+        anchors = []
+        for schema_edge, pseudo_edge in query_graph.edges:
+            if pseudo_edge.src_node != "?" and pseudo_edge.src_node not in [a[0] for a in anchors]:
+                anchor_type = self._resolve_anchor_type(schema_edge, pseudo_edge)
+                anchors.append((pseudo_edge.src_node, anchor_type))
+
+        if not anchors:
+            return []
 
         graph = self.finder.graph
 
-        def get_label(t: str) -> str:
-            return f"`{t}`" if "/" in t else t
+        def esc(name: str) -> str:
+            if " " in name or "-" in name or "/" in name:
+                return f"`{name}`"
+            return name
 
         edges = query_graph.edges
 
-        if len(edges) == 1:
-            # 1-hop: 単純な検索
-            return self._dfs_search(query_graph, anchor_name, anchor_type)
-
-        elif len(edges) == 2:
-            # 2-hop: チェーンパターン（全方向組み合わせを試行）
-            se1, pe1 = edges[0]
-            se2, pe2 = edges[1]
-
-            results = []
-
-            # 4つの方向パターンを試行:
-            # Pattern 1: (a)->(mid)->(ans) - 両方順方向
-            # Pattern 2: (mid)->(a), (mid)->(ans) - 1番目逆、2番目順
-            # Pattern 3: (a)->(mid), (ans)->(mid) - 1番目順、2番目逆
-            # Pattern 4: (mid)->(a), (ans)->(mid) - 両方逆
-
-            patterns = [
-                # (direction1, direction2, cypher_template)
-                ("fwd", "fwd", f"""
-                    MATCH (a:{get_label(se1.src_type)})-[r1:{se1.relation}]->(mid:{get_label(se1.tgt_type)})-[r2:{se2.relation}]->(ans:{get_label(se2.tgt_type)})
-                    WHERE a.name = $anchor_name AND a <> mid AND mid <> ans
-                    RETURN DISTINCT a.name AS anchor, mid.name AS mid_node, ans.name AS answer
-                    LIMIT 100
-                """),
-                ("rev", "fwd", f"""
-                    MATCH (mid:{get_label(se1.tgt_type)})-[r1:{se1.relation}]->(a:{get_label(se1.src_type)})
-                    MATCH (mid)-[r2:{se2.relation}]->(ans:{get_label(se2.tgt_type)})
-                    WHERE a.name = $anchor_name AND a <> mid AND mid <> ans
-                    RETURN DISTINCT a.name AS anchor, mid.name AS mid_node, ans.name AS answer
-                    LIMIT 100
-                """),
-                ("fwd", "rev", f"""
-                    MATCH (a:{get_label(se1.src_type)})-[r1:{se1.relation}]->(mid:{get_label(se1.tgt_type)})
-                    MATCH (ans:{get_label(se2.tgt_type)})-[r2:{se2.relation}]->(mid)
-                    WHERE a.name = $anchor_name AND a <> mid AND mid <> ans
-                    RETURN DISTINCT a.name AS anchor, mid.name AS mid_node, ans.name AS answer
-                    LIMIT 100
-                """),
-                ("rev", "rev", f"""
-                    MATCH (mid:{get_label(se1.tgt_type)})-[r1:{se1.relation}]->(a:{get_label(se1.src_type)})
-                    MATCH (ans:{get_label(se2.tgt_type)})-[r2:{se2.relation}]->(mid)
-                    WHERE a.name = $anchor_name AND a <> mid AND mid <> ans
-                    RETURN DISTINCT a.name AS anchor, mid.name AS mid_node, ans.name AS answer
-                    LIMIT 100
-                """),
-            ]
-
-            for dir1, dir2, cypher in patterns:
+        # Intersection: 複数anchorがある場合、各anchorで1-hop実行して積集合
+        if len(anchors) >= 2:
+            sets = []
+            for anchor_name, anchor_type in anchors:
+                se, pe = next(
+                    ((se, pe) for se, pe in edges if pe.src_node == anchor_name),
+                    (edges[0][0], edges[0][1]),
+                )
+                resolved_type = self._resolve_anchor_type(se, pe)
+                # 回答側のタイプを決定
+                ans_type = se.tgt_type if resolved_type == se.src_type else se.src_type
+                cypher = f"""
+                    MATCH (a:{esc(resolved_type)})-[r:{esc(se.relation)}]-(ans:{esc(ans_type)})
+                    WHERE a.name = $anchor_name
+                    RETURN DISTINCT ans.name AS answer
+                """
                 try:
                     records = graph.run(cypher, anchor_name=anchor_name).data()
+                    sets.append({r["answer"] for r in records if r["answer"]})
+                except Exception:
+                    sets.append(set())
+            if sets and all(sets):
+                return list(sets[0].intersection(*sets[1:]))
+            return []
 
-                    for record in records:
-                        subgraph = MatchedSubgraph(
-                            nodes={
-                                pe1.src_node: record["anchor"],
-                                pe1.tgt_node: record["mid_node"],
-                                pe2.tgt_node: record["answer"],
-                            },
-                            edges=[
-                                (record["anchor"], se1.relation, record["mid_node"]),
-                                (record["mid_node"], se2.relation, record["answer"]),
-                            ],
-                            score=0.0,
-                        )
-                        results.append(subgraph)
+        anchor_name = anchors[0][0]
+        anchor_type = anchors[0][1]
 
-                except Exception as e:
-                    pass  # このパターンはマッチしなかった
+        # タイプチェーンを構築（アンカーから辿る方向に合わせる）
+        rels = [se.relation for se, pe in edges]
+        types = [anchor_type]
+        current_type = anchor_type
+        for se, pe in edges:
+            if current_type.lower() == se.src_type.lower():
+                next_type = se.tgt_type
+            else:
+                next_type = se.src_type
+            types.append(next_type)
+            current_type = next_type
 
-            return results
+        try:
+            if len(edges) == 1:
+                cypher = f"""
+                    MATCH (a:{esc(types[0])})-[r:{esc(rels[0])}]-(ans:{esc(types[1])})
+                    WHERE a.name = $anchor_name
+                    RETURN DISTINCT ans.name AS answer
+                """
+                records = graph.run(cypher, anchor_name=anchor_name).data()
+                return [r["answer"] for r in records if r["answer"]]
 
-        else:
-            # 3ホップ以上: 単純化のため各エッジを個別に検索
-            return self._dfs_search(query_graph, anchor_name, anchor_type)
+            elif len(edges) == 2:
+                cypher = f"""
+                    MATCH (a:{esc(types[0])})-[r1:{esc(rels[0])}]-(mid:{esc(types[1])})-[r2:{esc(rels[1])}]-(ans:{esc(types[2])})
+                    WHERE a.name = $anchor_name AND a <> mid AND mid <> ans AND a <> ans
+                    RETURN DISTINCT ans.name AS answer
+                """
+                records = graph.run(cypher, anchor_name=anchor_name).data()
+                return [r["answer"] for r in records if r["answer"]]
 
-    def _dfs_search(
+            elif len(edges) == 3:
+                cypher = f"""
+                    MATCH (a:{esc(types[0])})-[r1:{esc(rels[0])}]-(n1:{esc(types[1])})-[r2:{esc(rels[1])}]-(n2:{esc(types[2])})-[r3:{esc(rels[2])}]-(ans:{esc(types[3])})
+                    WHERE a.name = $anchor_name AND a <> n1 AND n1 <> n2 AND n2 <> ans AND a <> ans AND a <> n2
+                    RETURN DISTINCT ans.name AS answer
+                """
+                records = graph.run(cypher, anchor_name=anchor_name).data()
+                return [r["answer"] for r in records if r["answer"]]
+
+        except Exception:
+            pass
+
+        return []
+
+    def _fallback_cypher_search(
         self,
         query_graph: QueryGraph,
-        anchor_name: str,
-        anchor_type: str,
+        pseudo_edges: List[PseudoEdge],
     ) -> List[MatchedSubgraph]:
-        """DFSでサブグラフを検索（両方向を試行）"""
+        """フォールバック: 旧Cypherベースのサブグラフ検索（回帰防止）"""
+        anchors = []
+        for schema_edge, pseudo_edge in query_graph.edges:
+            if pseudo_edge.src_node != "?" and pseudo_edge.src_node not in [a[0] for a in anchors]:
+                anchors.append((pseudo_edge.src_node, schema_edge.src_type))
 
+        if not anchors:
+            return []
+
+        anchor_name, anchor_type = anchors[0]
         graph = self.finder.graph
 
+        def get_rel(r: str) -> str:
+            if " " in r or "-" in r or "/" in r:
+                return f"`{r}`"
+            return r
+
+        edges = query_graph.edges
         results = []
 
-        def get_label(t: str) -> str:
-            return f"`{t}`" if "/" in t else t
-
-        # クエリグラフの各エッジについて検索
-        for schema_edge, pseudo_edge in query_graph.edges:
-            queries = []
-
-            # Case 1: 順方向、anchor is source
-            cypher1 = f"""
-            MATCH (src:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]->(tgt:{get_label(schema_edge.tgt_type)})
-            WHERE src.name = $anchor_name
-            RETURN DISTINCT
-                src.name AS src_name,
-                type(r) AS rel_type,
-                tgt.name AS tgt_name
-            LIMIT 50
+        if len(edges) == 1:
+            se, pe = edges[0]
+            cypher = f"""
+                MATCH (a)-[r:{get_rel(se.relation)}]-(ans)
+                WHERE a.name = $anchor_name
+                RETURN DISTINCT a.name AS anchor, ans.name AS answer
+                LIMIT 200
             """
-            queries.append(("fwd_src", cypher1))
+            try:
+                records = graph.run(cypher, anchor_name=anchor_name).data()
+                for record in records:
+                    results.append(MatchedSubgraph(
+                        nodes={pe.src_node: record["anchor"], pe.tgt_node: record["answer"]},
+                        edges=[(record["anchor"], se.relation, record["answer"])],
+                        score=0.0,
+                    ))
+            except Exception:
+                pass
 
-            # Case 2: 順方向、anchor is target
-            cypher2 = f"""
-            MATCH (src:{get_label(schema_edge.src_type)})-[r:{schema_edge.relation}]->(tgt:{get_label(schema_edge.tgt_type)})
-            WHERE tgt.name = $anchor_name
-            RETURN DISTINCT
-                src.name AS src_name,
-                type(r) AS rel_type,
-                tgt.name AS tgt_name
-            LIMIT 50
+        elif len(edges) == 2:
+            se1, pe1 = edges[0]
+            se2, pe2 = edges[1]
+            cypher = f"""
+                MATCH (a)-[r1:{get_rel(se1.relation)}]-(mid)-[r2:{get_rel(se2.relation)}]-(ans)
+                WHERE a.name = $anchor_name
+                  AND a <> mid AND mid <> ans AND a <> ans
+                RETURN DISTINCT a.name AS anchor, mid.name AS mid_node, ans.name AS answer
+                LIMIT 200
             """
-            queries.append(("fwd_tgt", cypher2))
+            try:
+                records = graph.run(cypher, anchor_name=anchor_name).data()
+                for record in records:
+                    results.append(MatchedSubgraph(
+                        nodes={
+                            pe1.src_node: record["anchor"],
+                            pe1.tgt_node: record["mid_node"],
+                            pe2.tgt_node: record["answer"],
+                        },
+                        edges=[
+                            (record["anchor"], se1.relation, record["mid_node"]),
+                            (record["mid_node"], se2.relation, record["answer"]),
+                        ],
+                        score=0.0,
+                    ))
+            except Exception:
+                pass
 
-            # Case 3: 逆方向（実際のエッジがtgt->srcの場合）、anchor is target (of reversed edge = src in schema)
-            cypher3 = f"""
-            MATCH (tgt:{get_label(schema_edge.tgt_type)})-[r:{schema_edge.relation}]->(src:{get_label(schema_edge.src_type)})
-            WHERE src.name = $anchor_name
-            RETURN DISTINCT
-                src.name AS src_name,
-                type(r) AS rel_type,
-                tgt.name AS tgt_name
-            LIMIT 50
+        elif len(edges) == 3:
+            se1, pe1 = edges[0]
+            se2, pe2 = edges[1]
+            se3, pe3 = edges[2]
+            cypher = f"""
+                MATCH (a)-[r1:{get_rel(se1.relation)}]-(n1)-[r2:{get_rel(se2.relation)}]-(n2)-[r3:{get_rel(se3.relation)}]-(ans)
+                WHERE a.name = $anchor_name
+                  AND a <> n1 AND n1 <> n2 AND n2 <> ans AND a <> ans AND a <> n2
+                RETURN DISTINCT a.name AS anchor, n1.name AS node1, n2.name AS node2, ans.name AS answer
+                LIMIT 200
             """
-            queries.append(("rev_src", cypher3))
-
-            # Case 4: 逆方向、anchor is source (of reversed edge = tgt in schema)
-            cypher4 = f"""
-            MATCH (tgt:{get_label(schema_edge.tgt_type)})-[r:{schema_edge.relation}]->(src:{get_label(schema_edge.src_type)})
-            WHERE tgt.name = $anchor_name
-            RETURN DISTINCT
-                src.name AS src_name,
-                type(r) AS rel_type,
-                tgt.name AS tgt_name
-            LIMIT 50
-            """
-            queries.append(("rev_tgt", cypher4))
-
-            for anchor_pos, cypher in queries:
-                try:
-                    records = graph.run(cypher, anchor_name=anchor_name).data()
-
-                    for record in records:
-                        # anchor位置に応じてノードマッピングを決定
-                        # pseudo_edge.src_nodeがアンカー、tgt_nodeが回答
-                        if anchor_pos in ("fwd_src", "rev_src"):
-                            # アンカーがsrc_name側
-                            nodes = {
-                                pseudo_edge.src_node: record["src_name"],
-                                pseudo_edge.tgt_node: record["tgt_name"],
-                            }
-                            edge_tuple = (record["src_name"], record["rel_type"], record["tgt_name"])
-                        else:
-                            # アンカーがtgt_name側
-                            nodes = {
-                                pseudo_edge.src_node: record["tgt_name"],
-                                pseudo_edge.tgt_node: record["src_name"],
-                            }
-                            edge_tuple = (record["tgt_name"], record["rel_type"], record["src_name"])
-
-                        subgraph = MatchedSubgraph(
-                            nodes=nodes,
-                            edges=[edge_tuple],
-                            score=0.0,
-                        )
-                        results.append(subgraph)
-
-                except Exception as e:
-                    print(f"DFS search error: {e}")
+            try:
+                records = graph.run(cypher, anchor_name=anchor_name).data()
+                for record in records:
+                    results.append(MatchedSubgraph(
+                        nodes={
+                            pe1.src_node: record["anchor"],
+                            pe1.tgt_node: record["node1"],
+                            pe2.tgt_node: record["node2"],
+                            pe3.tgt_node: record["answer"],
+                        },
+                        edges=[
+                            (record["anchor"], se1.relation, record["node1"]),
+                            (record["node1"], se2.relation, record["node2"]),
+                            (record["node2"], se3.relation, record["answer"]),
+                        ],
+                        score=0.0,
+                    ))
+            except Exception:
+                pass
 
         return results
 
@@ -541,7 +876,7 @@ Return JSON with "edges" key containing the list."""
         subgraphs: List[MatchedSubgraph],
         pseudo_edges: List[PseudoEdge]
     ) -> List[str]:
-        """回答エンティティを抽出 - パスの終点エンティティをそのまま返す"""
+        """回答エンティティを抽出 - スコア順に重複排除して返す"""
 
         if not subgraphs:
             return []
@@ -571,7 +906,6 @@ Return JSON with "edges" key containing the list."""
             elif not src_is_anchor:
                 endpoint = src
             else:
-                # 両方ともアンカーでない/両方ともアンカーの場合はtgtを使用
                 endpoint = tgt
 
             if endpoint and endpoint not in answers:

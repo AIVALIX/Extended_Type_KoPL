@@ -53,6 +53,18 @@ class QueryGraph:
 
 
 @dataclass
+class PartialMatch:
+    """Priority queue用の部分マッチ（Algorithm 2）"""
+    node_mapping: Dict[str, str]       # query_var -> kg_entity_name
+    edge_mapping: List[Tuple[str, str, str]]  # matched edges (src, rel, tgt)
+    current_distance: float            # accumulated SemDist
+    edges_matched: int                 # number of edges matched
+
+    def __lt__(self, other):
+        return self.current_distance < other.current_distance
+
+
+@dataclass
 class MatchedSubgraph:
     """マッチしたサブグラフ"""
     nodes: Dict[str, str]  # query_node -> kg_entity

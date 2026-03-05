@@ -73,7 +73,7 @@ class EvalResult:
 @dataclass
 class SetMetrics:
     """集合ベースの評価メトリクス"""
-    accuracy: bool = False    # 正解が全て含まれるか
+    accuracy: bool = False    # Exact Match: 正解と予測が完全一致か
     recall: float = 0.0       # 正解のうち何割が含まれるか
     precision: float = 0.0    # 予測のうち何割が正解か
     f1: float = 0.0           # F1スコア
@@ -96,7 +96,7 @@ def compute_set_metrics(gold_set: Set[str], pred_set: Set[str]) -> SetMetrics:
         return metrics
 
     overlap = gold_set & pred_set
-    metrics.accuracy = gold_set <= pred_set  # 正解が全て予測に含まれるか
+    metrics.accuracy = gold_set == pred_set  # Exact Match: 正解と予測が完全一致
     metrics.recall = len(overlap) / len(gold_set)
     metrics.precision = len(overlap) / len(pred_set) if pred_set else 0.0
 
@@ -104,6 +104,39 @@ def compute_set_metrics(gold_set: Set[str], pred_set: Set[str]) -> SetMetrics:
         metrics.f1 = 2 * metrics.precision * metrics.recall / (metrics.precision + metrics.recall)
 
     return metrics
+
+
+# リレーション名のエイリアスマッピング（KG名 -> 正規化名）
+# 逆方向リレーションも順方向に正規化
+RELATION_ALIASES = {
+    # associated_disease / associated_with は同じ
+    "associated_with": "associated_disease",
+    "associated with": "associated_disease",
+    # 逆方向リレーションを順方向に正規化
+    "targeted_by": "target",
+    "treated_by": "indication",
+    "caused_by_drug": "side_effect",
+    "interacted_by": "interacts_with",
+    "expressed_gene": "expression_present",
+    "expressed gene": "expression_present",
+    "absent_gene": "expression_absent",
+    "absent gene": "expression_absent",
+}
+
+
+def normalize_relation(rel: str) -> str:
+    """
+    リレーション名を正規化（スペースとアンダースコアを統一、エイリアス解決）
+
+    Args:
+        rel: リレーション名
+
+    Returns:
+        str: 正規化されたリレーション名（小文字、スペース→アンダースコア）
+    """
+    normalized = rel.lower().replace(" ", "_").replace("-", "_")
+    # エイリアス解決
+    return RELATION_ALIASES.get(normalized, normalized)
 
 
 def check_path_match(
@@ -127,7 +160,11 @@ def check_path_match(
     if len(predicted_relations) != len(gold_relations):
         return False
 
-    return predicted_relations == gold_relations
+    # 正規化して比較（スペース/アンダースコア/ハイフンの違いを吸収）
+    normalized_pred = [normalize_relation(r) for r in predicted_relations]
+    normalized_gold = [normalize_relation(r) for r in gold_relations]
+
+    return normalized_pred == normalized_gold
 
 
 def aggregate_metrics(
@@ -183,8 +220,9 @@ def evaluate_output(output: PipelineOutput) -> EvalResult:
     if output.error:
         return result
 
-    gold_set = set(output.gold_answers)
-    pred_set = set(output.predicted_entities)
+    # Case-insensitive matching (PcQA等でエンティティ名の大文字小文字が不一致)
+    gold_set = {a.lower() for a in output.gold_answers}
+    pred_set = {e.lower() for e in output.predicted_entities}
 
     metrics = compute_set_metrics(gold_set, pred_set)
     result.accuracy = metrics.accuracy
@@ -252,3 +290,119 @@ def evaluate_outputs(outputs: List[PipelineOutput]) -> List[EvalResult]:
         List[EvalResult]: 評価結果のリスト
     """
     return [evaluate_output(output) for output in outputs]
+
+
+# =============================================================================
+# NL (Natural Language) Evaluation Metrics
+# =============================================================================
+
+@dataclass
+class NLEvalResult:
+    """NL評価結果（ROUGE-L + Embedding Cosine Similarity）"""
+    idx: int
+    question: str
+    gold_answer: str
+    predicted_answer: str
+    rouge_l_r: float = 0.0
+    rouge_l_p: float = 0.0
+    rouge_l_f: float = 0.0
+    embedding_similarity: float = 0.0
+    error: Optional[str] = None
+    latency_ms: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "idx": self.idx,
+            "question": self.question,
+            "gold_answer": self.gold_answer,
+            "predicted_answer": self.predicted_answer,
+            "rouge_l_r": self.rouge_l_r,
+            "rouge_l_p": self.rouge_l_p,
+            "rouge_l_f": self.rouge_l_f,
+            "embedding_similarity": self.embedding_similarity,
+            "error": self.error,
+            "latency_ms": self.latency_ms,
+        }
+
+
+def compute_rouge_l(gold: str, predicted: str) -> Dict[str, float]:
+    """
+    ROUGE-Lスコアを計算（KGT論文準拠: rouge Pythonライブラリ使用）
+
+    Args:
+        gold: 正解テキスト
+        predicted: 予測テキスト
+
+    Returns:
+        dict: {"r": recall, "p": precision, "f": f1}
+    """
+    from rouge import Rouge
+
+    # 空文字列の場合は0を返す
+    if not gold or not predicted or not gold.strip() or not predicted.strip():
+        return {"r": 0.0, "p": 0.0, "f": 0.0}
+
+    try:
+        rouge = Rouge()
+        scores = rouge.get_scores(predicted, gold)
+        return scores[0]["rouge-l"]
+    except Exception:
+        return {"r": 0.0, "p": 0.0, "f": 0.0}
+
+
+def compute_embedding_similarity(
+    gold: str,
+    predicted: str,
+    embeddings,
+) -> float:
+    """
+    Embedding コサイン類似度を計算
+    （KGT論文のBERTScore=CLS-tokenコサイン類似度に相当）
+
+    Args:
+        gold: 正解テキスト
+        predicted: 予測テキスト
+        embeddings: OpenAI Embeddingsインスタンス
+
+    Returns:
+        float: コサイン類似度 (0-1)
+    """
+    import numpy as np
+
+    if not gold or not predicted or not gold.strip() or not predicted.strip():
+        return 0.0
+
+    try:
+        vecs = embeddings.embed_documents([gold, predicted])
+        v1, v2 = np.array(vecs[0]), np.array(vecs[1])
+        cos_sim = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+        return max(0.0, cos_sim)
+    except Exception:
+        return 0.0
+
+
+def aggregate_nl_metrics(results: List[NLEvalResult]) -> Dict[str, float]:
+    """
+    NL評価結果を集計
+
+    Args:
+        results: NLEvalResultのリスト
+
+    Returns:
+        dict: 集計されたメトリクス
+    """
+    if not results:
+        return {}
+
+    total = len(results)
+    errors = sum(1 for r in results if r.error)
+
+    return {
+        "total": total,
+        "errors": errors,
+        "rouge_l_recall": sum(r.rouge_l_r for r in results) / total * 100,
+        "rouge_l_precision": sum(r.rouge_l_p for r in results) / total * 100,
+        "rouge_l_f1": sum(r.rouge_l_f for r in results) / total * 100,
+        "embedding_similarity": sum(r.embedding_similarity for r in results) / total * 100,
+        "avg_latency_ms": sum(r.latency_ms for r in results) / total,
+    }

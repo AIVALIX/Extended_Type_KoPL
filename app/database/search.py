@@ -29,12 +29,17 @@ class GraphPathFinder:
 
     def __init__(self, kg_type: str = "primekgqa") -> None:
         s = get_settings()
+        import os
+        self.kg_type = kg_type  # KGタイプを保存
         # KGタイプに応じたNeo4j接続を使用
         if kg_type == "metaqa":
-            import os
             uri = os.getenv("NEO4J_METAQA_URI", "bolt://neo4j_metaqa:7687")
             user = os.getenv("NEO4J_METAQA_USER", "neo4j")
             password = os.getenv("NEO4J_METAQA_PASSWORD", "password")
+        elif kg_type == "pcqa":
+            uri = os.getenv("NEO4J_PCQA_URI", "bolt://neo4j_pcqa:7687")
+            user = os.getenv("NEO4J_PCQA_USER", "neo4j")
+            password = os.getenv("NEO4J_PCQA_PASSWORD", "password")
         else:
             uri = s.NEO4J_URI
             user = s.NEO4J_USERNAME
@@ -172,6 +177,242 @@ class GraphPathFinder:
             logger.warning("Missing embeddings: %s", missing)
 
         return rel2vec
+
+    def get_relations_between_types(
+        self,
+        src_type: str,
+        tgt_type: str,
+    ) -> List[Tuple[str, str]]:
+        """KGから2つのタイプ間で利用可能なリレーションを動的取得
+
+        Args:
+            src_type: ソースノードのタイプ
+            tgt_type: ターゲットノードのタイプ
+
+        Returns:
+            List of (relation_name, direction) tuples
+            direction: "->" for forward, "<-" for reverse
+        """
+        relations = []
+
+        # ラベルにスラッシュが含まれる場合はバッククォートでエスケープ
+        def escape_label(label: str) -> str:
+            if "/" in label:
+                return f"`{label}`"
+            return label
+
+        src_label = escape_label(src_type)
+        tgt_label = escape_label(tgt_type)
+
+        # 全KGタイプで統一: ノードのラベルがタイプ
+        query_fwd = f"""
+        MATCH (s:{src_label})-[r]->(t:{tgt_label})
+        RETURN DISTINCT type(r) AS rel
+        """
+        rows_fwd = self.graph.run(query_fwd).data()
+        for row in rows_fwd:
+            relations.append((row["rel"], "->"))
+
+        # 逆方向
+        query_rev = f"""
+        MATCH (s:{src_label})<-[r]-(t:{tgt_label})
+        RETURN DISTINCT type(r) AS rel
+        """
+        rows_rev = self.graph.run(query_rev).data()
+        for row in rows_rev:
+            if (row["rel"], "->") not in relations:
+                relations.append((row["rel"], "<-"))
+
+        return relations
+
+    def get_all_types(self) -> List[str]:
+        """KGから全てのエンティティタイプを取得"""
+        # 全KGタイプで統一: ラベルがタイプ
+        query = """
+        CALL db.labels() YIELD label
+        WHERE label <> 'RelationEmbedding'
+        RETURN label AS type
+        ORDER BY label
+        """
+        rows = self.graph.run(query).data()
+        return [row["type"] for row in rows]
+
+    def get_adjacent_relations(self, entity_name: str) -> List[str]:
+        """エンティティに隣接する全関係タイプを取得 (AdjRel)
+
+        Args:
+            entity_name: エンティティ名
+
+        Returns:
+            関係タイプ名のリスト
+        """
+        query = """
+        MATCH (e {name: $name})-[r]-()
+        RETURN DISTINCT type(r) AS rel
+        """
+        rows = self.graph.run(query, name=entity_name).data()
+        return [row["rel"] for row in rows]
+
+    def get_candidate_nodes(
+        self, entity_name: str, relation: str
+    ) -> List[Tuple[str, List[str]]]:
+        """特定関係で到達可能なノード名とラベルを取得 (GetCandNode)
+
+        Args:
+            entity_name: 起点エンティティ名
+            relation: 関係タイプ
+
+        Returns:
+            List of (node_name, labels) タプル
+        """
+        def escape_rel(r: str) -> str:
+            if " " in r or "-" in r or "/" in r:
+                return f"`{r}`"
+            return r
+
+        rel_escaped = escape_rel(relation)
+
+        # 両方向を検索
+        query = f"""
+        MATCH (e {{name: $name}})-[r:{rel_escaped}]-(n)
+        RETURN DISTINCT n.name AS name, labels(n) AS labels
+        """
+        rows = self.graph.run(query, name=entity_name).data()
+        return [(row["name"], row["labels"]) for row in rows]
+
+    def get_entity_labels(self, entity_name: str) -> List[str]:
+        """エンティティのNeo4jラベル一覧を取得
+
+        Args:
+            entity_name: エンティティ名
+
+        Returns:
+            ラベル名のリスト
+        """
+        query = """
+        MATCH (e {name: $name})
+        RETURN labels(e) AS labels
+        LIMIT 1
+        """
+        rows = self.graph.run(query, name=entity_name).data()
+        if rows:
+            return rows[0]["labels"]
+        return []
+
+    def find_compound_entity(
+        self, terms: List[str], label: Optional[str] = None
+    ) -> List[Tuple[str, List[str]]]:
+        """CONTAINS検索で複合名エンティティを検索（PcQA CancerCell用）
+
+        Args:
+            terms: 検索キーワードのリスト（例: ["EGFR", "lung cancer"]）
+            label: ラベルでフィルタ（例: "CancerCell"）
+
+        Returns:
+            List of (entity_name, labels) tuples
+        """
+        if not terms:
+            return []
+
+        where_parts = []
+        for i in range(len(terms)):
+            where_parts.append(
+                f"(toLower(n.name) CONTAINS toLower($term{i}) "
+                f"OR toLower(coalesce(n.name_en, '')) CONTAINS toLower($term{i}))"
+            )
+
+        label_clause = f":{label}" if label else ""
+        query = f"""
+        MATCH (n{label_clause})
+        WHERE {' AND '.join(where_parts)}
+        RETURN n.name AS name, labels(n) AS labels
+        LIMIT 10
+        """
+        params = {f"term{i}": term for i, term in enumerate(terms)}
+        try:
+            rows = self.graph.run(query, **params).data()
+            return [(row["name"], row["labels"]) for row in rows]
+        except Exception:
+            return []
+
+    def find_compound_entity_via_cancer(
+        self, gene_term: str, cancer_term: str
+    ) -> List[Tuple[str, List[str]]]:
+        """Cancer→CancerCell関係を使って複合エンティティを特定
+
+        Gene名でCancerCellをCONTAINS検索し、さらにCancer名（英語）で
+        ORIGINATED_FROM関係を使ってフィルタする。
+
+        Args:
+            gene_term: 遺伝子名（例: "ALK"）
+            cancer_term: 癌種名（英語、例: "giant cell carcinoma of the lung"）
+
+        Returns:
+            List of (entity_name, labels) tuples
+        """
+        query = """
+        MATCH (cc:CancerCell)-[:ORIGINATED_FROM]->(c:Cancer)
+        WHERE toLower(cc.name) CONTAINS toLower($gene)
+          AND toLower(c.name) CONTAINS toLower($cancer)
+        RETURN cc.name AS name, labels(cc) AS labels
+        LIMIT 10
+        """
+        try:
+            rows = self.graph.run(query, gene=gene_term, cancer=cancer_term).data()
+            return [(row["name"], row["labels"]) for row in rows]
+        except Exception:
+            return []
+
+    def get_all_entity_names(self) -> List[str]:
+        """KGから全エンティティ名を取得（SimEntインデックス構築用）
+
+        Returns:
+            エンティティ名のリスト
+        """
+        query = """
+        MATCH (e)
+        WHERE NOT 'RelationEmbedding' IN labels(e)
+          AND NOT 'EntityEmbedding' IN labels(e)
+          AND e.name IS NOT NULL
+        RETURN DISTINCT e.name AS name
+        """
+        rows = self.graph.run(query).data()
+        return [row["name"] for row in rows]
+
+    def get_entity_embeddings(self) -> Tuple[List[str], List[np.ndarray]]:
+        """事前計算済みEntityEmbeddingをDBから一括読み込み
+
+        Returns:
+            (entity_names, embedding_vectors) のタプル
+        """
+        query = """
+        MATCH (e:EntityEmbedding)
+        RETURN e.entity_name AS name, e.embedding_vector AS vec
+        """
+        rows = self.graph.run(query).data()
+        if not rows:
+            return [], []
+        names = [row["name"] for row in rows]
+        vecs = [np.asarray(row["vec"], dtype=np.float32) for row in rows]
+        return names, vecs
+
+    def get_all_relations(self) -> List[Tuple[str, str, str]]:
+        """KGから全てのリレーション情報を取得
+
+        Returns:
+            List of (src_type, relation, tgt_type) tuples
+        """
+        # 全KGタイプで統一: ラベルがタイプ
+        query = """
+        MATCH (s)-[r]->(t)
+        WHERE NOT 'RelationEmbedding' IN labels(s) AND NOT 'RelationEmbedding' IN labels(t)
+        WITH labels(s) AS src_labels, type(r) AS rel, labels(t) AS tgt_labels
+        UNWIND src_labels AS src_t
+        UNWIND tgt_labels AS tgt_t
+        RETURN DISTINCT src_t AS src_type, rel, tgt_t AS tgt_type
+        """
+        rows = self.graph.run(query).data()
+        return [(row["src_type"], row["rel"], row["tgt_type"]) for row in rows]
 
 
 # ────────────────────────────────────────────────────────────────

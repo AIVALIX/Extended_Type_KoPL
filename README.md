@@ -49,3 +49,6 @@ print('kopl_strict_struct_len',len(row.get('kopl_strict_struct',[])))
 print('kopl_type_struct_len',len(row.get('kopl_type_struct',[])))
 PY
 
+
+
+docker exec python-primekgqa-experiment python -m pipeline.debug --pipeline extended_type_kopl --data data/metaqa/qa/hop3.jsonl --index 0 1 2 3 4

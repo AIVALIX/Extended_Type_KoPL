@@ -30,6 +30,8 @@ class BaseReranker(ABC):
         question: str,
         candidate_paths: List,
         top_k: int = 1,
+        relation_hints: Optional[List[str]] = None,
+        kopl_program=None,
     ) -> List:
         """候補パスを再ランキングしてtop_k個を返す"""
         pass
@@ -43,6 +45,8 @@ class NoOpReranker(BaseReranker):
         question: str,
         candidate_paths: List,
         top_k: int = 1,
+        relation_hints: Optional[List[str]] = None,
+        kopl_program=None,
     ) -> List:
         return candidate_paths[:top_k]
 
@@ -78,47 +82,39 @@ class LLMReranker(BaseReranker):
                     parts.append(f" -[{rel}]-> ")
         return "".join(parts)
 
-    def _build_prompt(self, question: str, candidate_paths: List) -> str:
+    def _build_prompt(self, question: str, candidate_paths: List, relation_hints: Optional[List[str]] = None, kopl_program=None) -> str:
         """プロンプトを構築"""
         paths_text = ""
         for i, path in enumerate(candidate_paths):
             desc = self._get_path_description(path)
             paths_text += f"{i}. {desc}\n"
 
-        if self.kg_type == "metaqa":
-            domain_hint = """
-Domain: Movie database
-- DIRECTED_BY: who directed the movie
-- STARRED_ACTORS: who acted/starred in the movie
-- WRITTEN_BY: who wrote the screenplay
-- IN_LANGUAGE: what language the movie is in
-- HAS_GENRE: what genre the movie belongs to
-- RELEASE_YEAR: when the movie was released
-"""
-        else:
-            domain_hint = """
-Domain: Biomedical knowledge graph
-- target: drug targets a gene/protein
-- indication: drug is used to treat a disease
-- associated_with/associated_disease: gene is associated with a disease
-- ppi: protein-protein interaction
-"""
+        # KoPLプログラムの情報をプロンプトに追加
+        kopl_text = ""
+        if kopl_program:
+            kopl_lines = []
+            kopl_lines.append(f"Operation: {kopl_program.op_type.value if hasattr(kopl_program.op_type, 'value') else kopl_program.op_type}")
+            if kopl_program.anchor_name:
+                kopl_lines.append(f"Anchor entity: {kopl_program.anchor_name}")
+            for i, rel in enumerate(kopl_program.relations):
+                hint = f", hint: {rel.relation_hint}" if rel.relation_hint else ""
+                kopl_lines.append(f"  Hop {i+1}: {rel.src_type} -> {rel.tgt_type}{hint}")
+            kopl_text = "LLM-generated query plan:\n" + "\n".join(kopl_lines) + "\n"
 
-        prompt = f"""Select the path that best matches the question's intent.
+        prompt = f"""You are a knowledge graph expert. Select the single best path that answers the question.
 
 Question: {question}
-{domain_hint}
+
+{kopl_text}
 Candidate paths:
 {paths_text}
-IMPORTANT: Pay attention to the relation names. Match them to the keywords in the question:
-- "director/directed" → DIRECTED_BY
-- "star/starred/actor/acted" → STARRED_ACTORS
-- "writer/wrote/written" → WRITTEN_BY
-- "language" → IN_LANGUAGE
-- "genre/type" → HAS_GENRE
-- "release/year" → RELEASE_YEAR
+IMPORTANT:
+- Do NOT simply match relation names to words in the question. Relation names in the KG may use abbreviations or different terminology than the question.
+- Consider what each relation semantically means in the context of the knowledge graph.
+- The query plan hints are approximate and may not exactly match any relation name in the KG.
+- Think step-by-step about which path correctly captures the reasoning chain needed to answer the question.
 
-Return the index (0-indexed) of the path that best answers the question."""
+Return the index (0-indexed) of the best path."""
 
         return prompt
 
@@ -127,6 +123,8 @@ Return the index (0-indexed) of the path that best answers the question."""
         question: str,
         candidate_paths: List,
         top_k: int = 1,
+        relation_hints: Optional[List[str]] = None,
+        kopl_program=None,
     ) -> List:
         """LLMで最適なパスを選択"""
 
@@ -136,7 +134,7 @@ Return the index (0-indexed) of the path that best answers the question."""
         if len(candidate_paths) == 1:
             return candidate_paths
 
-        prompt = self._build_prompt(question, candidate_paths)
+        prompt = self._build_prompt(question, candidate_paths, relation_hints, kopl_program)
 
         try:
             llm_with_output = self.llm.with_structured_output(PathSelectionResponse)
@@ -178,10 +176,12 @@ class HybridReranker(BaseReranker):
         question: str,
         candidate_paths: List,
         top_k: int = 1,
+        relation_hints: Optional[List[str]] = None,
+        kopl_program=None,
     ) -> List:
         """ベクトルスコアを考慮しつつLLMで再ランキング"""
         # まずLLMで再ランキング
-        return self.llm_reranker.rerank(question, candidate_paths, top_k)
+        return self.llm_reranker.rerank(question, candidate_paths, top_k, relation_hints, kopl_program)
 
 
 def create_reranker(

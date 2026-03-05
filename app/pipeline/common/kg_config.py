@@ -16,6 +16,7 @@ class KGType(str, Enum):
     """Knowledge Graphの種類"""
     PRIMEKGQA = "primekgqa"
     METAQA = "metaqa"
+    PCQA = "pcqa"
 
 
 @dataclass
@@ -41,6 +42,12 @@ class Neo4jConfig:
                 uri=os.getenv("NEO4J_METAQA_URI", "bolt://neo4j_metaqa:7687"),
                 user=os.getenv("NEO4J_METAQA_USER", "neo4j"),
                 password=os.getenv("NEO4J_METAQA_PASSWORD", "password"),
+            )
+        elif kg_type == KGType.PCQA:
+            return cls(
+                uri=os.getenv("NEO4J_PCQA_URI", "bolt://neo4j_pcqa:7687"),
+                user=os.getenv("NEO4J_PCQA_USER", "neo4j"),
+                password=os.getenv("NEO4J_PCQA_PASSWORD", "password"),
             )
         else:
             raise ValueError(f"Unknown KG type: {kg_type}")
@@ -150,14 +157,38 @@ class KGConfig:
         )
 
     @classmethod
+    def pcqa(cls) -> "KGConfig":
+        """PcQA (Pan-cancer QA)の設定"""
+        return cls(
+            kg_type=KGType.PCQA,
+            neo4j=Neo4jConfig.from_env(KGType.PCQA),
+            datasets={
+                "all": DatasetConfig(
+                    name="all",
+                    path=Path("data/pcqa/qa/all.jsonl"),
+                    entity_key="entity",
+                    answer_key="answers",
+                    relation_keys=["relation"],
+                    query_type="mixed",  # 1-hop queries
+                ),
+            },
+            schema_types=[
+                "Cancer", "CancerCell", "CancerAlias", "Drug", "DrugAlias",
+                "Genesymbol", "GeneticDisease", "SnvFull", "Fusion", "ClinicalTrial",
+            ],
+        )
+
+    @classmethod
     def get(cls, kg_type: str) -> "KGConfig":
         """KGタイプから設定を取得"""
         if kg_type == "primekgqa":
             return cls.primekgqa()
         elif kg_type == "metaqa":
             return cls.metaqa()
+        elif kg_type == "pcqa":
+            return cls.pcqa()
         else:
-            raise ValueError(f"Unknown KG type: {kg_type}. Available: primekgqa, metaqa")
+            raise ValueError(f"Unknown KG type: {kg_type}. Available: primekgqa, metaqa, pcqa")
 
 
 # デフォルト設定（後方互換性のため）

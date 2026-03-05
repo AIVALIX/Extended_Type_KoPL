@@ -39,6 +39,10 @@ class KGTPipeline:
         "metaqa": [
             "Movie", "Person", "Organization", "Text", "Date", "Language", "Number"
         ],
+        "pcqa": [
+            "Cancer", "CancerCell", "CancerAlias", "Drug", "DrugAlias",
+            "Genesymbol", "SnvFull", "Fusion", "GeneticDisease", "ClinicalTrial"
+        ],
     }
 
     def __init__(
@@ -61,8 +65,14 @@ class KGTPipeline:
         self.schema = schema or build_schema_graph(kg_type)
         self.finder = GraphPathFinder(kg_type=kg_type)
 
-    def run(self, question: str, entity_name: Optional[str] = None) -> KGTResult:
-        """パイプライン実行"""
+    def run(self, question: str, entity_name: Optional[str] = None, generate_nl: bool = False) -> KGTResult:
+        """パイプライン実行
+
+        Args:
+            question: 入力質問
+            entity_name: エンティティ名（省略時はLLMで抽出）
+            generate_nl: Trueの場合、サブグラフからLLMで自然言語回答を生成
+        """
         log = []
         log.append(f"Input question: {question}")
 
@@ -127,6 +137,14 @@ class KGTPipeline:
         answer_entities, natural_answer = self._generate_answer(question, subgraph)
         log.append(f"  Found {len(answer_entities)} answer entities")
 
+        # 6. Natural Language Answer Generation (optional)
+        if generate_nl:
+            log.append("Phase 6: NL Answer Generation")
+            chains = self._retrieve_subgraph_chains(analysis, optimal_path)
+            log.append(f"  Retrieved {len(chains)} relationship chains")
+            natural_answer = self._generate_natural_answer(question, chains)
+            log.append(f"  Generated NL answer: {natural_answer[:80] if natural_answer else 'None'}...")
+
         return KGTResult(
             question=question,
             analysis=analysis,
@@ -143,11 +161,29 @@ class KGTPipeline:
         """KGタイプに応じた分析例を返す"""
         if self.kg_type == "metaqa":
             return """Examples:
-- "What movies did Tom Hanks star in?" → tail_entity_type: "Movie"
-- "Who directed Titanic?" → tail_entity_type: "Person" or "Organization"
-- "Who directed the movies that Tom Hanks starred in?" → tail_entity_type: "Person" (NOT Movie)
-- "What year was Titanic released?" → tail_entity_type: "Date"
-- "What genre is The Matrix?" → tail_entity_type: "Text\""""
+
+1. 1-hop: "Who directed Titanic?" → head_entity_name: "Titanic", tail_entity_type: "Person"
+
+2. 2-hop: "Who directed the movies that Tom Hanks starred in?" → head_entity_name: "Tom Hanks", tail_entity_type: "Person" (the director, NOT Movie)
+
+3. 3-hop: "Who starred in the movies written by the writers of The Matrix?" → head_entity_name: "The Matrix", tail_entity_type: "Person" (the actors)
+
+IMPORTANT: For multi-hop questions, tail_entity_type should be the FINAL answer type, not intermediate types."""
+        elif self.kg_type == "pcqa":
+            return """Examples:
+- "What drugs can treat lung cancer?" → head_entity_name: "lung cancer", tail_entity_type: "Drug"
+- "What types of cancer can EGFR drive?" → head_entity_name: "EGFR", tail_entity_type: "Cancer"
+- "What genetic mutations are in breast cancer?" → head_entity_name: "breast cancer", tail_entity_type: "SnvFull"
+- "Which genes does gefitinib inhibit?" → head_entity_name: "gefitinib", tail_entity_type: "Genesymbol"
+- "What drugs can treat cancers with TERT mutations?" → head_entity_name: "TERT" (NOT "TERT mutations"), tail_entity_type: "Drug"
+- "What NMPA-approved drugs for cancers with DDR2 mutations?" → head_entity_name: "DDR2" (extract gene name only), tail_entity_type: "Drug"
+- "What cancers can be treated with drugs that target BRAF?" → head_entity_name: "BRAF", tail_entity_type: "Cancer"
+
+IMPORTANT for head_entity_name extraction:
+- For "cancers with X mutations", extract just "X" (the gene name)
+- For "X mutations", extract just "X"
+- Remove words like "mutations", "cancers with", "gene" from the entity name
+- The entity should be a single word that exists in the knowledge graph (gene, drug, or cancer name)"""
         else:
             return """Examples:
 - "What diseases are associated with BRCA1?" → tail_entity_type: "disease"
@@ -218,7 +254,35 @@ Return JSON."""
                 return QuestionAnalysis(head_entity_name="", tail_entity_type=None)
 
         # DBからヘッドエンティティのタイプを取得
-        head_type, head_id = self._lookup_entity_type(head_name)
+        head_type, head_id, matched_name = self._lookup_entity_type(head_name)
+
+        # マッチした名前があればそれを使用（部分一致の場合に重要）
+        if matched_name:
+            head_name = matched_name
+
+        # PcQA: CancerCell複合名マッチング
+        compound_names: list = []
+        compound_search_term: Optional[str] = None
+        if self.kg_type == "pcqa":
+            if head_type in ("Genesymbol", "Fusion"):
+                gene_name = head_name  # 元の遺伝子名を保持
+                from pipeline.common.pcqa import resolve_pcqa_compound_entity, CANCERCELL_KEYWORDS
+                compound = resolve_pcqa_compound_entity(
+                    self.llm, self.finder, question, head_name, head_type
+                )
+                if compound:
+                    compound_name, compound_type, compound_names = compound
+                    head_name = compound_name
+                    head_type = compound_type
+                    head_id = None
+                    compound_search_term = gene_name
+                elif any(kw in question.lower() for kw in CANCERCELL_KEYWORDS):
+                    # Compound resolution失敗でもキーワードからCancerCellと推定
+                    head_type = "CancerCell"
+                    compound_search_term = gene_name
+            elif head_type == "CancerCell" and entity_name and entity_name.lower() != head_name.lower():
+                # 部分一致でCancerCellが返された場合（例: "alk" → "ALK-...-CancerCell"）
+                compound_search_term = entity_name  # 元の遺伝子名でCONTAINS検索
 
         return QuestionAnalysis(
             head_entity_name=head_name,
@@ -226,43 +290,65 @@ Return JSON."""
             tail_entity_type=tail_type,
             tail_attributes=tail_attrs,
             head_entity_id=head_id,
+            compound_names=compound_names,
+            compound_search_term=compound_search_term,
         )
 
-    def _lookup_entity_type(self, entity_name: str) -> Tuple[Optional[str], Optional[str]]:
-        """DBからエンティティタイプを検索"""
+    def _lookup_entity_type(self, entity_name: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """DBからエンティティタイプを検索
+
+        Returns:
+            (type, id, matched_name) - タイプ、ID、実際にマッチした名前
+        """
         graph = self.finder.graph
 
         # 完全一致検索
         cypher = """
         MATCH (n)
         WHERE n.name = $name
-        RETURN elementId(n) AS id, [l IN labels(n) WHERE l <> '_Entity'][0] AS type
+        RETURN elementId(n) AS id, [l IN labels(n) WHERE l <> '_Entity'][0] AS type, n.name AS name
         LIMIT 1
         """
 
         try:
             result = graph.run(cypher, name=entity_name).data()
             if result:
-                return result[0]["type"], result[0]["id"]
+                return result[0]["type"], result[0]["id"], result[0]["name"]
         except Exception:
             pass
 
-        # 部分一致検索
+        # 大文字小文字を無視した完全一致検索
+        cypher = """
+        MATCH (n)
+        WHERE toLower(n.name) = toLower($name)
+        RETURN elementId(n) AS id, [l IN labels(n) WHERE l <> '_Entity'][0] AS type, n.name AS name
+        LIMIT 1
+        """
+
+        try:
+            result = graph.run(cypher, name=entity_name).data()
+            if result:
+                return result[0]["type"], result[0]["id"], result[0]["name"]
+        except Exception:
+            pass
+
+        # 部分一致検索（短い名前を優先）
         cypher = """
         MATCH (n)
         WHERE toLower(n.name) CONTAINS toLower($name)
-        RETURN elementId(n) AS id, [l IN labels(n) WHERE l <> '_Entity'][0] AS type
+        RETURN elementId(n) AS id, [l IN labels(n) WHERE l <> '_Entity'][0] AS type, n.name AS name
+        ORDER BY length(n.name)
         LIMIT 1
         """
 
         try:
             result = graph.run(cypher, name=entity_name).data()
             if result:
-                return result[0]["type"], result[0]["id"]
+                return result[0]["type"], result[0]["id"], result[0]["name"]
         except Exception:
             pass
 
-        return None, None
+        return None, None, None
 
     def _find_schema_paths(
         self,
@@ -292,8 +378,19 @@ Return JSON."""
 
         path_texts = []
         for p in all_paths:
-            # パスをテキスト化
-            text = " -> ".join(p.path)
+            # 論文準拠: Cypher記法でリレーションチェーンを表現
+            # 例: "(Drug)-[:inhibition_to {}]->(Genesymbol)"
+            edges = []
+            for i, rel in enumerate(p.relations):
+                src = p.types[i]
+                tgt = p.types[i + 1]
+                direction = p.directions[i] if i < len(p.directions) else "->"
+                rel_lower = rel.lower()
+                if direction == "->":
+                    edges.append(f"({src})-[:{rel_lower} {{}}]->({tgt})")
+                else:
+                    edges.append(f"({tgt})-[:{rel_lower} {{}}]->({src})")
+            text = ",".join(edges)
             path_texts.append(text)
 
         path_embeddings = self.embeddings.embed_documents(path_texts)
@@ -320,11 +417,27 @@ Return JSON."""
         def get_label(t: str) -> str:
             return f"`{t}`" if "/" in t else t
 
+        def get_rel(r: str) -> str:
+            """リレーション名をエスケープ（スペースやハイフンを含む場合）"""
+            if " " in r or "-" in r or "/" in r:
+                return f"`{r}`"
+            return r
+
         def get_direction(idx: int) -> str:
             """パスのidx番目のエッジの方向を取得"""
             if path.directions and idx < len(path.directions):
                 return path.directions[idx]
             return "->"  # デフォルトは順方向
+
+        def where_head(var: str) -> str:
+            """ヘッドエンティティのWHERE句（compound対応）"""
+            if analysis.compound_search_term:
+                # PcQA CancerCell: CONTAINS検索で全マッチを対象にする
+                return f'toLower({var}.name) CONTAINS toLower("{analysis.compound_search_term}")'
+            if analysis.compound_names:
+                names_str = ", ".join(f'"{n}"' for n in analysis.compound_names)
+                return f'{var}.name IN [{names_str}]'
+            return f'{var}.name = "{analysis.head_entity_name}"'
 
         head_name = analysis.head_entity_name
 
@@ -334,16 +447,16 @@ Return JSON."""
             if direction == "<-":
                 # Reverse: 実際のエッジは (tgt)-[r]->(src) なので、アンカーを右側に
                 return f"""
-                MATCH (t:{get_label(path.types[1])})-[r:{path.relations[0]}]->(h:{get_label(path.types[0])})
-                WHERE h.name = "{head_name}"
+                MATCH (t:{get_label(path.types[1])})-[r:{get_rel(path.relations[0])}]->(h:{get_label(path.types[0])})
+                WHERE {where_head("h")}
                 RETURN DISTINCT t.name AS answer
                 LIMIT 50
                 """
             else:
                 # Forward: (src)-[r]->(tgt)
                 return f"""
-                MATCH (h:{get_label(path.types[0])})-[r:{path.relations[0]}]->(t:{get_label(path.types[1])})
-                WHERE h.name = "{head_name}"
+                MATCH (h:{get_label(path.types[0])})-[r:{get_rel(path.relations[0])}]->(t:{get_label(path.types[1])})
+                WHERE {where_head("h")}
                 RETURN DISTINCT t.name AS answer
                 LIMIT 50
                 """
@@ -355,34 +468,34 @@ Return JSON."""
             if dir1 == "<-" and dir2 == "<-":
                 # Both reverse: (t)->(m)->(h)
                 return f"""
-                MATCH (t:{get_label(path.types[2])})-[r2:{path.relations[1]}]->(m:{get_label(path.types[1])})-[r1:{path.relations[0]}]->(h:{get_label(path.types[0])})
-                WHERE h.name = "{head_name}"
+                MATCH (t:{get_label(path.types[2])})-[r2:{get_rel(path.relations[1])}]->(m:{get_label(path.types[1])})-[r1:{get_rel(path.relations[0])}]->(h:{get_label(path.types[0])})
+                WHERE {where_head("h")}
                 RETURN DISTINCT t.name AS answer
                 LIMIT 50
                 """
             elif dir1 == "<-" and dir2 == "->":
                 # First reverse, second forward: (m)->(h), (m)->(t)
                 return f"""
-                MATCH (m:{get_label(path.types[1])})-[r1:{path.relations[0]}]->(h:{get_label(path.types[0])})
-                MATCH (m)-[r2:{path.relations[1]}]->(t:{get_label(path.types[2])})
-                WHERE h.name = "{head_name}"
+                MATCH (m:{get_label(path.types[1])})-[r1:{get_rel(path.relations[0])}]->(h:{get_label(path.types[0])})
+                MATCH (m)-[r2:{get_rel(path.relations[1])}]->(t:{get_label(path.types[2])})
+                WHERE {where_head("h")}
                 RETURN DISTINCT t.name AS answer
                 LIMIT 50
                 """
             elif dir1 == "->" and dir2 == "<-":
                 # First forward, second reverse: (h)->(m), (t)->(m)
                 return f"""
-                MATCH (h:{get_label(path.types[0])})-[r1:{path.relations[0]}]->(m:{get_label(path.types[1])})
-                MATCH (t:{get_label(path.types[2])})-[r2:{path.relations[1]}]->(m)
-                WHERE h.name = "{head_name}"
+                MATCH (h:{get_label(path.types[0])})-[r1:{get_rel(path.relations[0])}]->(m:{get_label(path.types[1])})
+                MATCH (t:{get_label(path.types[2])})-[r2:{get_rel(path.relations[1])}]->(m)
+                WHERE {where_head("h")}
                 RETURN DISTINCT t.name AS answer
                 LIMIT 50
                 """
             else:
                 # Both forward: (h)->(m)->(t)
                 return f"""
-                MATCH (h:{get_label(path.types[0])})-[r1:{path.relations[0]}]->(m:{get_label(path.types[1])})-[r2:{path.relations[1]}]->(t:{get_label(path.types[2])})
-                WHERE h.name = "{head_name}"
+                MATCH (h:{get_label(path.types[0])})-[r1:{get_rel(path.relations[0])}]->(m:{get_label(path.types[1])})-[r2:{get_rel(path.relations[1])}]->(t:{get_label(path.types[2])})
+                WHERE {where_head("h")}
                 RETURN DISTINCT t.name AS answer
                 LIMIT 50
                 """
@@ -391,12 +504,12 @@ Return JSON."""
             # 簡略化のため順方向のみ対応（逆方向は3-hop以上では稀）
             pattern_parts = [f"(n0:{get_label(path.types[0])})"]
             for i, rel in enumerate(path.relations):
-                pattern_parts.append(f"-[r{i}:{rel}]->(n{i+1}:{get_label(path.types[i+1])})")
+                pattern_parts.append(f"-[r{i}:{get_rel(rel)}]->(n{i+1}:{get_label(path.types[i+1])})")
             pattern = "".join(pattern_parts)
 
             return f"""
             MATCH {pattern}
-            WHERE n0.name = "{head_name}"
+            WHERE {where_head("n0")}
             RETURN DISTINCT n{len(path.relations)}.name AS answer
             LIMIT 50
             """
@@ -435,3 +548,193 @@ Return JSON."""
         entities = list(dict.fromkeys(entities))
 
         return entities, None
+
+    # =========================================================================
+    # Phase 6: Natural Language Answer Generation (KGT論文準拠)
+    # =========================================================================
+
+    # KGT論文 (GigaScience 2025) Inference.py の2-shot few-shotプロンプト
+    _NL_INFERENCE_PROMPT = """You are a reasoning robot, and you need to perform the following two steps step by step: 1. Output a corresponding natural language sentence for each relationship chain. 2. Answer my question using natural language from step 1. 3.Translate all answers into English.
+    Note: The output format is: Output: One sentence in natural language.
+    For example:
+    (ALK-p.L1196M-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(克唑替尼) 克唑替尼
+    (ALK-p.C1156Y-巨细胞肺癌)-[:resistance_to {evidence_level: 'clinical trial - phase2'}]->(克唑替尼) 克唑替尼
+    (ALK-p.F1174V-巨细胞肺癌)-[:resistance_to {evidence_level: 'clinical study'}]->(克唑替尼) 克唑替尼
+    (ALK-p.C1156Y-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(luminespib) luminespib
+    (ALK-p.F1245C-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(克唑替尼) 克唑替尼
+    (CMTR1-ALK-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(克唑替尼) 克唑替尼
+    What drugs are resistant to ALK in giant cell lung cancer?
+    Output: ALK in giant cell lung cancer are resistant to clotozantinib and luminaspib.
+
+    (cabozantinib)-[:treatment {fda_approved: true, nmpa_approved: false, score: '10'}]->(肾细胞癌) cabozantinib
+    (伏罗尼布)-[:treatment {fda_approved: false, nmpa_approved: true, score: '10'}]->(肾细胞癌) 伏罗尼布
+    (仑伐替尼)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 仑伐替尼
+    (纳武利尤单抗)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 纳武利尤单抗
+    (帕博利珠单抗)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 帕博利珠单抗
+    (伊匹木单抗)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 伊匹木单抗
+    (阿昔替尼)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 阿昔替尼
+    (tivozanib)-[:treatment {fda_approved: true, nmpa_approved: false, score: '10'}]->(肾细胞癌) tivozanib
+    (temsirolimus)-[:treatment {fda_approved: true, nmpa_approved: false, score: '10'}]->(肾细胞癌) temsirolimus
+    (替加氟)-[:treatment {fda_approved: false, nmpa_approved: true, score: '10'}]->(肾细胞癌) 替加氟
+    What are the drug treatment options for renal cell carcinoma?
+    Output: Renal cell carcinoma can be treated with the following drugs: cabozantinib, voronib, lenvatinib, nivolumab, pembrolizumab, ipilimumab, acitinib, tivozanib, temsirolimus, and tigafur.
+    """
+
+    # フォールバック用プロンプト（サブグラフ取得失敗時）
+    _NL_FALLBACK_PROMPT = """You are a reasoning robot, and you need to output natural language to answer my questions.
+    For example:
+    What drugs are ALK mutations in giant cell lung cancer resistant to?
+    Output: ALK mutations in giant cell lung cancer are resistant to clotozantinib and luminaspib.
+    """
+
+    def _retrieve_subgraph_chains(
+        self, analysis: QuestionAnalysis, path: SchemaPath
+    ) -> List[str]:
+        """サブグラフをリレーションチェーン文字列として取得"""
+        graph = self.finder.graph
+        head_name = analysis.head_entity_name
+
+        def get_label(t: str) -> str:
+            return f"`{t}`" if "/" in t else t
+
+        def get_rel(r: str) -> str:
+            if " " in r or "-" in r or "/" in r:
+                return f"`{r}`"
+            return r
+
+        def where_head(var: str) -> str:
+            if analysis.compound_search_term:
+                return f'toLower({var}.name) CONTAINS toLower("{analysis.compound_search_term}")'
+            if analysis.compound_names:
+                names_str = ", ".join(f'"{n}"' for n in analysis.compound_names)
+                return f'{var}.name IN [{names_str}]'
+            return f'{var}.name = "{head_name}"'
+
+        try:
+            if len(path.types) == 2:
+                # 1-hop
+                d = path.directions[0] if path.directions else "->"
+                rel = get_rel(path.relations[0])
+                if d == "<-":
+                    cypher = f"""
+                    MATCH (t:{get_label(path.types[1])})-[r:{rel}]->(h:{get_label(path.types[0])})
+                    WHERE {where_head("h")}
+                    RETURN h.name AS head, type(r) AS rel, t.name AS tail
+                    LIMIT 10
+                    """
+                else:
+                    cypher = f"""
+                    MATCH (h:{get_label(path.types[0])})-[r:{rel}]->(t:{get_label(path.types[1])})
+                    WHERE {where_head("h")}
+                    RETURN h.name AS head, type(r) AS rel, t.name AS tail
+                    LIMIT 10
+                    """
+                results = graph.run(cypher).data()
+                return [
+                    f"({row['head']})-[:{row['rel']}]->({row['tail']}) {row['tail']}"
+                    for row in results
+                ]
+
+            elif len(path.types) == 3:
+                # 2-hop
+                dir1 = path.directions[0] if path.directions else "->"
+                dir2 = path.directions[1] if len(path.directions) > 1 else "->"
+                rel1 = get_rel(path.relations[0])
+                rel2 = get_rel(path.relations[1])
+
+                if dir1 == "<-" and dir2 == "<-":
+                    cypher = f"""
+                    MATCH (t:{get_label(path.types[2])})-[r2:{rel2}]->(m:{get_label(path.types[1])})-[r1:{rel1}]->(h:{get_label(path.types[0])})
+                    WHERE {where_head("h")}
+                    RETURN h.name AS head, type(r1) AS rel1, m.name AS mid, type(r2) AS rel2, t.name AS tail
+                    LIMIT 10
+                    """
+                elif dir1 == "<-" and dir2 == "->":
+                    cypher = f"""
+                    MATCH (m:{get_label(path.types[1])})-[r1:{rel1}]->(h:{get_label(path.types[0])})
+                    MATCH (m)-[r2:{rel2}]->(t:{get_label(path.types[2])})
+                    WHERE {where_head("h")}
+                    RETURN h.name AS head, type(r1) AS rel1, m.name AS mid, type(r2) AS rel2, t.name AS tail
+                    LIMIT 10
+                    """
+                elif dir1 == "->" and dir2 == "<-":
+                    cypher = f"""
+                    MATCH (h:{get_label(path.types[0])})-[r1:{rel1}]->(m:{get_label(path.types[1])})
+                    MATCH (t:{get_label(path.types[2])})-[r2:{rel2}]->(m)
+                    WHERE {where_head("h")}
+                    RETURN h.name AS head, type(r1) AS rel1, m.name AS mid, type(r2) AS rel2, t.name AS tail
+                    LIMIT 10
+                    """
+                else:
+                    cypher = f"""
+                    MATCH (h:{get_label(path.types[0])})-[r1:{rel1}]->(m:{get_label(path.types[1])})-[r2:{rel2}]->(t:{get_label(path.types[2])})
+                    WHERE {where_head("h")}
+                    RETURN h.name AS head, type(r1) AS rel1, m.name AS mid, type(r2) AS rel2, t.name AS tail
+                    LIMIT 10
+                    """
+                results = graph.run(cypher).data()
+                return [
+                    f"({row['head']})-[:{row['rel1']}]->({row['mid']})-[:{row['rel2']}]->({row['tail']}) {row['tail']}"
+                    for row in results
+                ]
+
+            else:
+                # 3-hop+: 動的構築
+                pattern_parts = [f"(n0:{get_label(path.types[0])})"]
+                for i, rel in enumerate(path.relations):
+                    pattern_parts.append(f"-[r{i}:{get_rel(rel)}]->(n{i+1}:{get_label(path.types[i+1])})")
+                pattern = "".join(pattern_parts)
+
+                return_parts = ["n0.name AS n0"]
+                for i in range(len(path.relations)):
+                    return_parts.append(f"type(r{i}) AS r{i}")
+                    return_parts.append(f"n{i+1}.name AS n{i+1}")
+
+                cypher = f"""
+                MATCH {pattern}
+                WHERE {where_head("n0")}
+                RETURN {', '.join(return_parts)}
+                LIMIT 10
+                """
+                results = graph.run(cypher).data()
+                chains = []
+                for row in results:
+                    parts = [f"({row['n0']})"]
+                    for i in range(len(path.relations)):
+                        parts.append(f"-[:{row[f'r{i}']}]->({row[f'n{i+1}']})")
+                    last = row[f"n{len(path.relations)}"]
+                    chains.append("".join(parts) + f" {last}")
+                return chains
+
+        except Exception as e:
+            print(f"Chain retrieval error: {e}")
+            return []
+
+    def _generate_natural_answer(self, question: str, chains: List[str]) -> Optional[str]:
+        """サブグラフのチェーンからLLMで自然言語回答を生成（KGT論文準拠）"""
+        if chains:
+            chain_text = "\n".join(chains)
+            prompt = self._NL_INFERENCE_PROMPT + chain_text + "\n" + question
+        else:
+            # フォールバック: サブグラフなしでLLMに直接回答させる
+            prompt = self._NL_FALLBACK_PROMPT + question
+
+        try:
+            response = self.llm.invoke(prompt)
+            answer = response.content.strip()
+
+            # "Output: " で始まる行を探す
+            for line in answer.split("\n"):
+                line = line.strip()
+                if line.startswith("Output:"):
+                    return line
+                if line and not line.startswith("("):
+                    # 最初の非チェーン行を回答とみなす
+                    if not line.startswith("Output:"):
+                        return f"Output: {line}"
+                    return line
+
+            return f"Output: {answer}" if answer else None
+        except Exception as e:
+            print(f"NL generation error: {e}")
+            return None

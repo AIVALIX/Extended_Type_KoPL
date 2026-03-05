@@ -2,10 +2,9 @@
 統一評価パイプライン
 
 データセット入力から精度評価までを一括で行う
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation --kg primekgqa --num-samples 20 --random --workers 16 --pipeline safe --no-schema
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation --kg primekgqa --num-samples 500 --random --workers 4 --pipeline safe kgt etk --no-schema --reranker llm --output /app/result/result_em
 
-使用方法:
-  # PrimeKGQA（デフォルト）
-  python pipeline/run_evaluation.py --pipeline kgt --num-samples 20
   python pipeline/run_evaluation.py --pipeline safe --dataset one_hop two_hop
 
   # MetaQA
@@ -25,6 +24,58 @@
 対応KG:
   - primekgqa: PrimeKGQA（バイオメディカル）
   - metaqa: MetaQA（映画ドメイン）
+
+
+  # 1. MetaQA: SAFE + KGT + ETK (Rerankerなし)
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation \
+  --kg metaqa --num-samples 400 --random --workers 4 --no-schema \
+  --pipeline safe kgt extended_type_kopl \
+  --output-dir /app/result/eval_em_metaqa \
+  --output /app/result/eval_em_metaqa/summary.json
+
+# 2. MetaQA: ETK+Reranker
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation \
+  --kg metaqa --num-samples 400 --random --workers 32 --no-schema \
+  --pipeline extended_type_kopl --reranker llm \
+  --output-dir /app/result/eval_em_metaqa_reranker \
+  --output /app/result/eval_em_metaqa_reranker/summary_2.json
+
+
+python app/pipeline/run_repeated_eval.py \
+  --runs 20 \
+  --cmd "docker exec python-primekgqa-experiment python -m pipeline.run_evaluation \
+    --kg metaqa --num-samples 400 --random --workers 16 --no-schema \
+    --pipeline extended_type_kopl --reranker llm \
+    --output-dir /app/result/eval_em_metaqa_reranker" \
+  --output result/eval_em_metaqa_reranker/aggregated.json
+
+# 3. PrimeKGQA paraphrase: SAFE + KGT + ETK
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation \
+  --kg primekgqa --num-samples 500 --random --workers 4 --no-schema \
+  --pipeline safe kgt extended_type_kopl \
+  --output-dir /app/result/eval_em_primekgqa \
+  --output /app/result/eval_em_primekgqa/summary.json
+
+# 4. PrimeKGQA paraphrase: ETK+Reranker
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation \
+  --kg primekgqa --num-samples 500 --random --workers 8 --no-schema \
+  --pipeline extended_type_kopl --reranker llm \
+  --output-dir /app/result/eval_em_primekgqa_reranker \
+  --output /app/result/eval_em_primekgqa_reranker/summary.json
+
+# 5. PrimeKGQA raw: SAFE + KGT + ETK
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation \
+  --kg primekgqa_raw --num-samples 500 --random --workers 4 --no-schema \
+  --pipeline safe kgt extended_type_kopl \
+  --output-dir /app/result/eval_em_primekgqa_raw \
+  --output /app/result/eval_em_primekgqa_raw/summary.json
+
+# 6. PrimeKGQA raw: ETK+Reranker
+docker exec python-primekgqa-experiment python -m pipeline.run_evaluation \
+  --kg primekgqa_raw --num-samples 500 --random --workers 8 --no-schema \
+  --pipeline extended_type_kopl --reranker llm \
+  --output-dir /app/result/eval_em_primekgqa_raw_reranker \
+  --output /app/result/eval_em_primekgqa_raw_reranker/summary.json
 """
 
 from __future__ import annotations
@@ -32,7 +83,10 @@ from __future__ import annotations
 import argparse
 import json
 import time
+import warnings
 import multiprocessing as mp
+
+warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -42,36 +96,70 @@ from tqdm import tqdm
 from pipeline.common.eval_metrics import (
     PipelineOutput,
     EvalResult,
+    NLEvalResult,
     evaluate_outputs,
     aggregate_metrics,
+    aggregate_nl_metrics,
+    compute_rouge_l,
+    compute_embedding_similarity,
     save_pipeline_outputs,
 )
 from pipeline.common.kg_config import KGConfig, KGType
 
 
-# データセット設定（PrimeKGQA）
+# データセット設定（PrimeKGQA - paraphrase版）
 DATASETS_PRIMEKGQA = {
     "one_hop": {
-        "path": "result/dataset_v2/one_hop.jsonl",
+        "path": "result/dataset_v4_paraphrase/one_hop.jsonl",
         "entity_key": "anchor_name",
         "gold_relations_keys": ["relation"],
         "gold_answers_key": "answer_nodes",
     },
     "two_hop": {
-        "path": "result/dataset_v2/two_hop.jsonl",
+        "path": "result/dataset_v4_paraphrase/two_hop.jsonl",
         "entity_key": "anchor_name",
         "gold_relations_keys": ["rel1", "rel2"],
         "gold_answers_key": "answer_nodes",
     },
     "two_intersection": {
-        "path": "result/dataset_v2/two_intersection.jsonl",
+        "path": "result/dataset_v4_paraphrase/two_intersection.jsonl",
         "entity_key": "anchor_a_name",
         "gold_relations_keys": ["anchor_a_rel", "anchor_b_rel"],
         "gold_answers_key": "answer_nodes",
         "extra_entity_key": "anchor_b_name",
     },
     "three_intersection": {
-        "path": "result/dataset_v2/three_intersection.jsonl",
+        "path": "result/dataset_v4_paraphrase/three_intersection.jsonl",
+        "entity_key": "anchor_a_name",
+        "gold_relations_keys": ["anchor_a_rel", "anchor_b_rel", "anchor_c_rel"],
+        "gold_answers_key": "answer_nodes",
+        "extra_entity_keys": ["anchor_b_name", "anchor_c_name"],
+    },
+}
+
+# データセット設定（PrimeKGQA - no-paraphrase版）
+DATASETS_PRIMEKGQA_RAW = {
+    "one_hop": {
+        "path": "result/dataset_v4/one_hop.jsonl",
+        "entity_key": "anchor_name",
+        "gold_relations_keys": ["relation"],
+        "gold_answers_key": "answer_nodes",
+    },
+    "two_hop": {
+        "path": "result/dataset_v4/two_hop.jsonl",
+        "entity_key": "anchor_name",
+        "gold_relations_keys": ["rel1", "rel2"],
+        "gold_answers_key": "answer_nodes",
+    },
+    "two_intersection": {
+        "path": "result/dataset_v4/two_intersection.jsonl",
+        "entity_key": "anchor_a_name",
+        "gold_relations_keys": ["anchor_a_rel", "anchor_b_rel"],
+        "gold_answers_key": "answer_nodes",
+        "extra_entity_key": "anchor_b_name",
+    },
+    "three_intersection": {
+        "path": "result/dataset_v4/three_intersection.jsonl",
         "entity_key": "anchor_a_name",
         "gold_relations_keys": ["anchor_a_rel", "anchor_b_rel", "anchor_c_rel"],
         "gold_answers_key": "answer_nodes",
@@ -82,21 +170,31 @@ DATASETS_PRIMEKGQA = {
 # データセット設定（MetaQA）
 DATASETS_METAQA = {
     "1hop": {
-        "path": "result/metaqa/1hop.jsonl",
+        "path": "result/metaqa_v2/1hop.jsonl",
         "entity_key": "entity",
         "gold_relations_keys": ["relation"],
         "gold_answers_key": "answers",
     },
     "2hop": {
-        "path": "result/metaqa/2hop.jsonl",
+        "path": "result/metaqa_v2/2hop.jsonl",
         "entity_key": "entity",
         "gold_relations_keys": ["relation1", "relation2"],
         "gold_answers_key": "answers",
     },
     "3hop": {
-        "path": "result/metaqa/3hop.jsonl",
+        "path": "result/metaqa_v2/3hop.jsonl",
         "entity_key": "entity",
         "gold_relations_keys": ["relation1", "relation2", "relation3"],
+        "gold_answers_key": "answers",
+    },
+}
+
+# データセット設定（PcQA - Pan-cancer QA）
+DATASETS_PCQA = {
+    "all": {
+        "path": "data/pcqa/qa/eval_v2.jsonl",  # Cypher-verified dataset with entity/path/filters (241 samples)
+        "entity_key": "entity",
+        "gold_relations_keys": ["relation"],
         "gold_answers_key": "answers",
     },
 }
@@ -104,7 +202,9 @@ DATASETS_METAQA = {
 # KGごとのデータセット設定
 DATASETS_BY_KG = {
     "primekgqa": DATASETS_PRIMEKGQA,
+    "primekgqa_raw": DATASETS_PRIMEKGQA_RAW,
     "metaqa": DATASETS_METAQA,
+    "pcqa": DATASETS_PCQA,
 }
 
 # 後方互換性のため
@@ -134,7 +234,7 @@ PIPELINE_CONFIGS_METAQA = {
     },
     "safe": {
         "name": "SAFE",
-        "datasets": ["1hop", "2hop"],  # 3hopは非対応（delta=1まで）
+        "datasets": ["1hop", "2hop", "3hop"],
     },
     "kgt": {
         "name": "KGT",
@@ -142,10 +242,28 @@ PIPELINE_CONFIGS_METAQA = {
     },
 }
 
+# パイプライン設定（PcQA）
+PIPELINE_CONFIGS_PCQA = {
+    "extended_type_kopl": {
+        "name": "Extended Type-KoPL",
+        "datasets": ["all"],
+    },
+    "safe": {
+        "name": "SAFE",
+        "datasets": ["all"],
+    },
+    "kgt": {
+        "name": "KGT",
+        "datasets": ["all"],
+    },
+}
+
 # KGごとのパイプライン設定
 PIPELINE_CONFIGS_BY_KG = {
     "primekgqa": PIPELINE_CONFIGS_PRIMEKGQA,
+    "primekgqa_raw": PIPELINE_CONFIGS_PRIMEKGQA,  # 同じパイプライン設定を共有
     "metaqa": PIPELINE_CONFIGS_METAQA,
+    "pcqa": PIPELINE_CONFIGS_PCQA,
 }
 
 # 後方互換性のため
@@ -162,6 +280,8 @@ DATASET_NAMES = {
     "1hop": "1-hop",
     "2hop": "2-hop",
     "3hop": "3-hop",
+    # PcQA
+    "all": "all",
 }
 
 
@@ -252,7 +372,15 @@ class PipelineRunner:
         try:
             start = time.time()
             assert self.pipeline is not None
-            result = self.pipeline.run(question=question, entity_name=entity_name)
+            run_kwargs = {}
+            if (
+                hasattr(self.pipeline, "run")
+                and "n_gold" in self.pipeline.run.__code__.co_varnames
+            ):
+                run_kwargs["n_gold"] = len(gold_answers)
+            result = self.pipeline.run(
+                question=question, entity_name=entity_name, **run_kwargs
+            )
             output.latency_ms = (time.time() - start) * 1000
 
             output.predicted_relations = self._extract_relations(result)
@@ -270,6 +398,9 @@ _worker_runner: Optional[PipelineRunner] = None
 
 def _init_worker(pipeline_id: str, pipeline_kwargs: Optional[Dict[str, Any]] = None):
     """ワーカープロセス初期化"""
+    import warnings
+
+    warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
     global _worker_runner
     _worker_runner = PipelineRunner(pipeline_id, pipeline_kwargs)
 
@@ -289,6 +420,7 @@ def load_dataset(
     num_samples: int,
     random_sample: bool = False,
     datasets_config: Optional[Dict[str, Any]] = None,
+    seed: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """データセットを読み込み
 
@@ -322,6 +454,8 @@ def load_dataset(
 
     # ランダムサンプリングまたは先頭から取得
     if random_sample:
+        if seed is not None:
+            random.seed(seed)
         return random.sample(all_samples, num_samples)
     else:
         return all_samples[:num_samples]
@@ -339,6 +473,7 @@ def run_pipeline_evaluation(
     per_sample_timeout_s: float = 300.0,
     watch_interval_s: float = 2.0,
     max_inflight: Optional[int] = None,
+    seed: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     パイプライン評価を実行
@@ -383,7 +518,7 @@ def run_pipeline_evaluation(
         # データ読み込み（ランダムサンプリング対応）
         dataset_path = datasets_config[dataset_name]["path"]
         samples = load_dataset(
-            dataset_name, num_samples, random_sample, datasets_config
+            dataset_name, num_samples, random_sample, datasets_config, seed=seed
         )
         if not samples:
             print(f"    [SKIP] No data found")
@@ -550,6 +685,185 @@ def run_pipeline_evaluation(
     return results
 
 
+def run_nl_evaluation(
+    pipeline_id: str,
+    num_samples: int,
+    random_sample: bool = False,
+    pipeline_kwargs: Optional[Dict[str, Any]] = None,
+    kg_type: str = "pcqa",
+    seed: Optional[int] = None,
+    nl_data: str = "pcqa",
+) -> Dict[str, Any]:
+    """
+    NL（自然言語）評価を実行（KGT論文準拠: ROUGE-L + Embedding Cosine Similarity）
+
+    PcQA.json の gold answer テキストと、パイプラインが生成した NL 回答を比較する。
+
+    nl_data:
+      - "pcqa": PcQA.json全405サンプル（デフォルト）
+      - "eval_v2": eval_v2.jsonlの241サンプル（属性フィルタ不要な質問のみ）
+    """
+    import random as _random
+
+    # PcQA.json を読み込み（gold NL answer用）
+    pcqa_path = Path("data/pcqa/PcQA.json")
+    if not pcqa_path.exists():
+        print(f"  [ERROR] {pcqa_path} not found")
+        return {}
+
+    with pcqa_path.open("r", encoding="utf-8") as f:
+        pcqa_all = json.load(f)
+
+    if nl_data == "eval_v2":
+        # eval_v2.jsonlからquestion + entity_nameを取得、PcQA.jsonからgold NL answerを取得
+        eval_path = Path("data/pcqa/qa/eval_v2.jsonl")
+        if not eval_path.exists():
+            print(f"  [ERROR] {eval_path} not found")
+            return {}
+
+        eval_samples = []
+        with eval_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                eval_samples.append(json.loads(line.strip()))
+
+        print(f"  Loaded {len(eval_samples)} samples from eval_v2.jsonl")
+
+        # (orig_idx, {"question": ..., "answer": ..., "entity_name": ...}) のリストを構築
+        # original_index は1ベース → 0ベースに変換
+        all_samples_with_entity = []
+        for es in eval_samples:
+            orig_idx = es.get("original_index", 1)
+            pcqa_idx = orig_idx - 1  # 1-based → 0-based
+            if 0 <= pcqa_idx < len(pcqa_all):
+                gold_answer = pcqa_all[pcqa_idx].get("answer", "")
+            else:
+                gold_answer = ""
+            all_samples_with_entity.append(
+                (
+                    orig_idx,
+                    {
+                        "question": es["question"],
+                        "answer": gold_answer,
+                        "entity_name": es.get("entity"),
+                    },
+                )
+            )
+
+        # サンプリング
+        if len(all_samples_with_entity) > num_samples:
+            if random_sample:
+                if seed is not None:
+                    _random.seed(seed)
+                samples = _random.sample(all_samples_with_entity, num_samples)
+            else:
+                samples = all_samples_with_entity[:num_samples]
+        else:
+            samples = all_samples_with_entity
+    else:
+        print(f"  Loaded {len(pcqa_all)} samples from PcQA.json")
+
+        # サンプリング
+        all_samples = pcqa_all
+        if len(all_samples) > num_samples:
+            if random_sample:
+                if seed is not None:
+                    _random.seed(seed)
+                samples = _random.sample(list(enumerate(all_samples)), num_samples)
+            else:
+                samples = list(enumerate(all_samples[:num_samples]))
+        else:
+            samples = list(enumerate(all_samples))
+
+    # KGTPipeline を直接初期化（generate_nl パラメータを使うため）
+    from pipeline.kgt import KGTPipeline
+
+    pipeline_kwargs = pipeline_kwargs or {}
+    pipeline = KGTPipeline(**pipeline_kwargs)
+
+    # Embedding初期化（コサイン類似度計算用）
+    embeddings = pipeline.embeddings  # KGTPipelineが既に持っている
+
+    # 評価実行
+    nl_results: List[NLEvalResult] = []
+
+    for orig_idx, sample in tqdm(samples, desc="  Running NL eval", leave=False):
+        question = sample["question"]
+        gold_answer = sample["answer"]
+
+        # "Output: " プレフィックスを除去して比較
+        gold_text = gold_answer
+        if gold_text.startswith("Output: "):
+            gold_text = gold_text[len("Output: ") :]
+
+        result = NLEvalResult(
+            idx=orig_idx,
+            question=question,
+            gold_answer=gold_text,
+            predicted_answer="",
+        )
+
+        try:
+            start = time.time()
+            entity_name = (
+                sample.get("entity_name") if isinstance(sample, dict) else None
+            )
+            pipeline_result = pipeline.run(
+                question=question, entity_name=entity_name, generate_nl=True
+            )
+            result.latency_ms = (time.time() - start) * 1000
+
+            pred_answer = pipeline_result.natural_answer or ""
+            # "Output: " プレフィックスを除去
+            if pred_answer.startswith("Output: "):
+                pred_answer = pred_answer[len("Output: ") :]
+            result.predicted_answer = pred_answer
+
+            # ROUGE-L
+            rouge_scores = compute_rouge_l(gold_text, pred_answer)
+            result.rouge_l_r = rouge_scores["r"]
+            result.rouge_l_p = rouge_scores["p"]
+            result.rouge_l_f = rouge_scores["f"]
+
+            # Embedding Cosine Similarity
+            result.embedding_similarity = compute_embedding_similarity(
+                gold_text, pred_answer, embeddings
+            )
+
+        except Exception as e:
+            result.error = str(e)
+
+        nl_results.append(result)
+
+    # 集計
+    metrics = aggregate_nl_metrics(nl_results)
+
+    # 結果表示
+    print(f"\n  === NL Evaluation Results ({pipeline_id}) ===")
+    print(f"  Total:              {metrics.get('total', 0)}")
+    print(f"  Errors:             {metrics.get('errors', 0)}")
+    print(f"  ROUGE-L Recall:     {metrics.get('rouge_l_recall', 0):.1f}%")
+    print(f"  ROUGE-L Precision:  {metrics.get('rouge_l_precision', 0):.1f}%")
+    print(f"  ROUGE-L F1:         {metrics.get('rouge_l_f1', 0):.1f}%")
+    print(f"  Embed Similarity:   {metrics.get('embedding_similarity', 0):.1f}%")
+    print(f"  Avg Latency:        {metrics.get('avg_latency_ms', 0):.0f}ms")
+
+    # サンプル表示
+    print(f"\n  --- Sample Predictions (first 5) ---")
+    for r in nl_results[:5]:
+        print(f"  [{r.idx}] Q: {r.question[:60]}...")
+        print(f"       Gold: {r.gold_answer[:80]}...")
+        print(f"       Pred: {r.predicted_answer[:80]}...")
+        print(
+            f"       ROUGE-L F1: {r.rouge_l_f:.3f}  EmbSim: {r.embedding_similarity:.3f}"
+        )
+        print()
+
+    return {
+        "metrics": metrics,
+        "nl_results": nl_results,
+    }
+
+
 def print_comparison_table(
     all_results: Dict[str, Dict[str, Dict[str, Any]]],
     kg_type: str = "primekgqa",
@@ -651,8 +965,8 @@ Examples:
         "--kg",
         type=str,
         default="primekgqa",
-        choices=["primekgqa", "metaqa"],
-        help="Knowledge Graph to use (default: primekgqa)",
+        choices=["primekgqa", "primekgqa_raw", "metaqa", "pcqa"],
+        help="Knowledge Graph to use (default: primekgqa). primekgqa_raw uses no-paraphrase dataset.",
     )
     p.add_argument("--pipeline", type=str, nargs="+", help="Pipeline(s) to evaluate")
     p.add_argument("--all", action="store_true", help="Evaluate all pipelines")
@@ -674,6 +988,9 @@ Examples:
         help="Randomly sample from dataset instead of taking first N",
     )
     p.add_argument(
+        "--seed", type=int, default=None, help="Random seed for reproducible sampling"
+    )
+    p.add_argument(
         "--workers", type=int, default=1, help="Number of parallel workers (default: 1)"
     )
     p.add_argument(
@@ -690,6 +1007,12 @@ Examples:
         type=int,
         default=1,
         help="SAFE pipeline delta parameter (default: 1)",
+    )
+    p.add_argument(
+        "--safe-k-sim-ent",
+        type=int,
+        default=3,
+        help="SAFE pipeline SimEnt k parameter (default: 3)",
     )
     p.add_argument(
         "--reranker",
@@ -715,6 +1038,25 @@ Examples:
         type=int,
         default=None,
         help="Max inflight tasks for parallel execution (default: workers*2)",
+    )
+    p.add_argument(
+        "--no-schema",
+        action="store_true",
+        help="Run without schema relations (only type enumeration, relations from KG)",
+    )
+    p.add_argument(
+        "--eval-mode",
+        type=str,
+        default="set",
+        choices=["set", "nl"],
+        help="Evaluation mode: 'set' (entity set matching, default) or 'nl' (natural language ROUGE-L/EmbSim, PCQA only)",
+    )
+    p.add_argument(
+        "--nl-data",
+        type=str,
+        default="pcqa",
+        choices=["pcqa", "eval_v2"],
+        help="NL evaluation data source: 'pcqa' (PcQA.json 405 samples) or 'eval_v2' (eval_v2.jsonl 241 samples, no attribute questions)",
     )
     args = p.parse_args()
 
@@ -759,8 +1101,34 @@ Examples:
     print(f"Datasets:  {', '.join(datasets)}")
     print(f"Samples:   {args.num_samples}" + (" (random)" if args.random else ""))
     print(f"Workers:   {args.workers}")
+    print(f"Eval Mode: {args.eval_mode}")
+    if args.no_schema:
+        print(f"Schema:    NO (relations from KG)")
     if args.output_dir:
         print(f"Output:    {args.output_dir}")
+
+    # NL評価モード（PCQA専用）
+    if args.eval_mode == "nl":
+        if kg_type != "pcqa":
+            print("\nError: --eval-mode nl is only supported for --kg pcqa")
+            return
+        for pipeline_id in pipelines:
+            pipeline_name = pipeline_configs[pipeline_id]["name"]
+            nl_data = getattr(args, "nl_data", "pcqa")
+            print(f"\n{'='*60}")
+            print(f"Pipeline: {pipeline_name} (NL evaluation, data={nl_data})")
+            print(f"{'='*60}")
+            pipeline_kwargs = {"kg_type": kg_type}
+            run_nl_evaluation(
+                pipeline_id,
+                args.num_samples,
+                args.random,
+                pipeline_kwargs,
+                kg_type,
+                seed=args.seed,
+                nl_data=nl_data,
+            )
+        return
 
     all_results = {}
 
@@ -771,11 +1139,22 @@ Examples:
         print(f"{'='*60}")
 
         # パイプライン固有のパラメータ
-        pipeline_kwargs = {"kg_type": kg_type}
+        # primekgqa_raw は KG自体は primekgqa（データセットのみ異なる）
+        pipeline_kg_type = "primekgqa" if kg_type == "primekgqa_raw" else kg_type
+        pipeline_kwargs = {"kg_type": pipeline_kg_type}
+
+        # スキーマなしモード（Extended Type-KoPL, SAFE のみ対応）
+        if args.no_schema and pipeline_id in ["extended_type_kopl", "safe"]:
+            pipeline_kwargs["use_schema_relations"] = False
+            print(f"  (no-schema mode: relations from KG)")
+
         if pipeline_id == "safe":
             pipeline_kwargs["delta"] = args.safe_delta
+            pipeline_kwargs["k_sim_ent"] = args.safe_k_sim_ent
             if args.safe_delta != 1:
                 print(f"  (delta={args.safe_delta})")
+            if args.safe_k_sim_ent != 3:
+                print(f"  (k_sim_ent={args.safe_k_sim_ent})")
         if pipeline_id == "extended_type_kopl":
             pipeline_kwargs["reranker_type"] = args.reranker
             pipeline_kwargs["reranker_input_k"] = args.reranker_input_k
@@ -793,6 +1172,7 @@ Examples:
             kg_type,
             per_sample_timeout_s=args.per_sample_timeout,
             max_inflight=args.max_inflight,
+            seed=args.seed,
         )
         all_results[pipeline_id] = results
 
