@@ -720,35 +720,109 @@ def _build_webqsp() -> ETKKGConfig:
 
 _KQAPRO_EXAMPLES = """Examples for KQA Pro (Wikidata open-domain):
 
+--- Entity retrieval (answer_type: "entity") ---
+
 1. 1-hop: "Who directed Forrest Gump?"
-operations: [
-  {{"src_type": "film", "tgt_type": "human", "relation": "director", "anchor_name": "Forrest Gump"}}
-]
+operations: [{{"src_type": "film", "tgt_type": "human", "relation": "director", "anchor_name": "Forrest Gump"}}]
 final_operation: "relate"
+answer_type: "entity"
 
-2. 1-hop: "What country is the University of Oxford in?"
-operations: [
-  {{"src_type": "university", "tgt_type": "sovereign_state", "relation": "country", "anchor_name": "University of Oxford"}}
-]
-final_operation: "relate"
-
-3. 2-hop: "Who are the cast members of films directed by Steven Spielberg?"
+2. 2-hop: "Who are the cast members of films directed by Steven Spielberg?"
 operations: [
   {{"src_type": "human", "tgt_type": "film", "relation": "director", "anchor_name": "Steven Spielberg"}},
   {{"src_type": "film", "tgt_type": "human", "relation": "cast_member"}}
 ]
 final_operation: "relate"
+answer_type: "entity"
 
-4. 1-hop: "What genre is Star Wars?"
+--- Intersection (answer_type: "entity", final_operation: "intersection") ---
+
+3. "What film has the genre of romance and has Ava Gardner as a cast member?"
 operations: [
-  {{"src_type": "film", "tgt_type": "Concept", "relation": "genre", "anchor_name": "Star Wars"}}
+  {{"src_type": "film", "tgt_type": "Concept", "relation": "genre", "anchor_name": "romance film"}},
+  {{"src_type": "film", "tgt_type": "human", "relation": "cast_member", "anchor_name": "Ava Gardner"}}
+]
+final_operation: "intersection"
+answer_type: "entity"
+
+--- Count (answer_type: "count") ---
+
+4. "How many films did Steven Spielberg direct?"
+operations: [{{"src_type": "human", "tgt_type": "film", "relation": "director", "anchor_name": "Steven Spielberg"}}]
+final_operation: "relate"
+answer_type: "count"
+
+--- Attribute query (answer_type: "attr") ---
+
+5. "What is the population of Tokyo?"
+operations: [{{"src_type": "city", "tgt_type": "city", "relation": "self", "anchor_name": "Tokyo"}}]
+final_operation: "relate"
+answer_type: "attr"
+query_key: "population"
+
+--- Relation query (answer_type: "relation") ---
+
+6. "What is the relationship between Forrest Gump and English?"
+operations: [
+  {{"src_type": "film", "tgt_type": "film", "relation": "self", "anchor_name": "Forrest Gump"}}
 ]
 final_operation: "relate"
+answer_type: "relation"
+select_entity_a: "Forrest Gump"
+select_entity_b: "English"
+
+--- Verification (answer_type: "verify") ---
+
+7. "Was Forrest Gump released in 1994?"
+operations: [{{"src_type": "film", "tgt_type": "film", "relation": "self", "anchor_name": "Forrest Gump"}}]
+final_operation: "relate"
+answer_type: "verify"
+query_key: "publication date"
+verify_value: "1994"
+verify_op: "="
+
+8. "Is 129586 the exploitation visa number of Bridget Jones's Diary?"
+operations: [{{"src_type": "film", "tgt_type": "film", "relation": "self", "anchor_name": "Bridget Jones's Diary"}}]
+final_operation: "relate"
+answer_type: "verify"
+query_key: "exploitation visa number"
+verify_value: "129586"
+verify_op: "="
+
+--- Select between two entities (answer_type: "select") ---
+
+9. "Does My Neighbor Totoro or Hannah Arendt have the longer run-time?"
+operations: []
+final_operation: "relate"
+answer_type: "select"
+query_key: "duration"
+select_mode: "greater"
+select_entity_a: "My Neighbor Totoro"
+select_entity_b: "Hannah Arendt"
+
+--- Select among filtered set (answer_type: "select") ---
+
+10. "Which former French region has the smallest population?"
+operations: [{{"src_type": "Concept", "tgt_type": "Concept", "relation": "self", "anchor_name": "former French region"}}]
+final_operation: "relate"
+answer_type: "select"
+query_key: "population"
+select_mode: "smallest"
+
+--- Filter with property constraints ---
+
+11. "Which person is a member of the Democratic Party and born on 1954-03-11?"
+operations: [{{"src_type": "organization", "tgt_type": "human", "relation": "member_of_political_party", "anchor_name": "Democratic Party"}}]
+final_operation: "relate"
+answer_type: "entity"
+filters: [{{"node_type": "human", "property_name": "date_of_birth", "operator": "=", "value": "1954-03-11"}}]
 
 IMPORTANT:
-- Build path from anchor to answer
-- Use natural relation names with underscores (e.g., cast_member, place_of_birth, country_of_citizenship)
-- Only the first operation has anchor_name"""
+- Build path from anchor to answer entity
+- Use natural relation names with underscores (e.g., cast_member, place_of_birth)
+- Only the first operation (or each branch in intersection) has anchor_name
+- For attr/verify/select questions, operations may be empty or just locate the entity
+- query_key must match the KG property name exactly"""
 
 _KQAPRO_ENTITY_EXTRACTION_EXAMPLES = """Examples for KQA Pro (open-domain):
 - "Who directed Forrest Gump?"

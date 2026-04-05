@@ -221,6 +221,12 @@ DATASETS_KQAPRO = {
         "gold_relations_keys": ["relation"],
         "gold_answers_key": "answers",
     },
+    "val_all": {
+        "path": "data/kqapro/qa/val_all.jsonl",
+        "entity_key": "entity",
+        "gold_relations_keys": ["relation"],
+        "gold_answers_key": "answers",
+    },
 }
 
 # KGごとのデータセット設定
@@ -306,7 +312,7 @@ PIPELINE_CONFIGS_WEBQSP = {
 PIPELINE_CONFIGS_KQAPRO = {
     "extended_type_kopl": {
         "name": "Extended Type-KoPL",
-        "datasets": ["val"],
+        "datasets": ["val", "val_all"],
     },
 }
 
@@ -446,6 +452,17 @@ class PipelineRunner:
             output.predicted_relations = self._extract_relations(result)
             output.predicted_entities = self._extract_entities(result)
 
+            # For extended answer types (count, attr, verify, select, relation),
+            # the answer is in natural_answer, not answer_entities
+            if (
+                hasattr(result, "natural_answer")
+                and result.natural_answer
+                and hasattr(result, "kopl_program")
+                and result.kopl_program
+                and getattr(result.kopl_program, "answer_type", "entity") != "entity"
+            ):
+                output.predicted_entities = [result.natural_answer]
+
             # ステップ詳細を保存
             if hasattr(result, "processing_log"):
                 output.processing_log = result.processing_log
@@ -458,6 +475,7 @@ class PipelineRunner:
                         for r in kp.relations
                     ],
                     "anchor": kp.anchor_name,
+                    "answer_type": getattr(kp, "answer_type", "entity"),
                 }
             if hasattr(result, "candidate_paths"):
                 output.candidate_paths = [p.to_text() for p in result.candidate_paths[:20]]

@@ -67,6 +67,14 @@ class KoPLOperation:
     children: List["KoPLOperation"] = field(default_factory=list)
     anchor_name: Optional[str] = None  # アンカーエンティティ名
     filters: Optional[List[PropertyFilterSchema]] = None  # Property filters for answer entities
+    # KQA-Pro extended answer fields
+    answer_type: str = "entity"  # entity, count, attr, relation, verify, select
+    query_key: Optional[str] = None  # attribute/property to query
+    verify_value: Optional[str] = None  # value to check for verify
+    verify_op: Optional[str] = None  # operator for verify (=, !=, >, <)
+    select_mode: Optional[str] = None  # greater, less, smallest, largest, etc.
+    select_entity_a: Optional[str] = None  # for SelectBetween
+    select_entity_b: Optional[str] = None  # for SelectBetween
 
 
 # リレーション名を自然言語に変換するマッピング
@@ -362,6 +370,43 @@ class AtomicKoPLProgramSchema(BaseModel):
     filters: Optional[List[PropertyFilterSchema]] = Field(
         default=None,
         description="Property filters to apply on result nodes (e.g. fda_approved = YES)",
+    )
+    # KQA-Pro extended answer modes
+    answer_type: str = Field(
+        default="entity",
+        description=(
+            "What the question asks for: "
+            "'entity' (return entity names), "
+            "'count' (return number of entities), "
+            "'attr' (return an attribute value), "
+            "'relation' (return the relation name between two entities), "
+            "'verify' (return yes/no), "
+            "'select' (compare two entities on an attribute)"
+        ),
+    )
+    query_key: Optional[str] = Field(
+        default=None,
+        description="For attr/verify/select: the attribute or property to query (e.g. 'population', 'duration')",
+    )
+    verify_value: Optional[str] = Field(
+        default=None,
+        description="For verify: the value to check against (e.g. '1905', 'English')",
+    )
+    verify_op: Optional[str] = Field(
+        default=None,
+        description="For verify: comparison operator ('=', '!=', '>', '<'). Default '='",
+    )
+    select_mode: Optional[str] = Field(
+        default=None,
+        description="For select: 'greater'/'less'/'earliest'/'latest'/'smallest'/'largest'",
+    )
+    select_entity_a: Optional[str] = Field(
+        default=None,
+        description="For select (between two): name of entity A",
+    )
+    select_entity_b: Optional[str] = Field(
+        default=None,
+        description="For select (between two): name of entity B",
     )
 
 
@@ -2060,16 +2105,36 @@ Step 1:"""
                 for f in self._active_filters:
                     prop = f.property_name
                     val = f.value
+                    op = getattr(f, 'operator', '=') or '='
                     for ent in (answer_entities if isinstance(answer_entities, (set, list)) else []):
                         try:
-                            cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.{prop} = $val RETURN n.name AS name LIMIT 1"
+                            # Build operator-aware filter
+                            if op in ('>', '<', '>=', '<='):
+                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` {op} $val RETURN n.name AS name LIMIT 1"
+                            elif op == '!=':
+                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` <> $val RETURN n.name AS name LIMIT 1"
+                            elif op == 'CONTAINS':
+                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` CONTAINS $val RETURN n.name AS name LIMIT 1"
+                            else:
+                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` = $val RETURN n.name AS name LIMIT 1"
                             result = graph.run(cypher_filter, name=ent, val=val).data()
                             if result:
                                 filtered.add(result[0]["name"])
                         except Exception as e:
-                            print(f"[Filter] Error for {ent}: {e}")
-                log.append(f"Phase 5.5: KoPL filter applied ({len(answer_entities)} -> {len(filtered)})")
-                answer_entities = filtered if isinstance(answer_entities, set) else list(filtered)
+                            logger.warning("[Filter] Error for %s: %s", ent, e)
+                if filtered:
+                    log.append(f"Phase 5.5: KoPL filter applied ({len(answer_entities)} -> {len(filtered)})")
+                    answer_entities = filtered if isinstance(answer_entities, set) else list(filtered)
+                else:
+                    # If filter eliminates everything, keep original (filter may be invalid)
+                    log.append(f"Phase 5.5: KoPL filter would eliminate all {len(answer_entities)} entities, skipping")
+
+            # Phase 6: Extended answer type processing (KQA-Pro)
+            answer_type = kopl_program.answer_type if kopl_program else "entity"
+            if answer_type != "entity" and kopl_program:
+                natural_answer = self._resolve_extended_answer(
+                    kopl_program, answer_entities, entity_name, log
+                )
 
             return ExtendedTypeKoPLResult(
                 question=question,
@@ -2415,6 +2480,23 @@ Filterable properties (use filters array when the question mentions these):
 {chr(10).join(filter_lines)}
 """
 
+        # KQA-Pro extended answer types
+        answer_type_info = ""
+        if self.kg_type == "kqapro":
+            answer_type_info = """
+ANSWER TYPES — set answer_type based on what the question asks for:
+- "entity": Who/What/Which → return entity names (default)
+- "count": How many → return a number
+- "attr": What is the [property] of X → return an attribute value. Set query_key to the property name.
+- "relation": What is the relationship between X and Y → return a relation name. Set select_entity_a and select_entity_b.
+- "verify": Is/Was/Does X have Y → return yes/no. Set query_key, verify_value, verify_op.
+- "select": Which of X or Y has greater/less Z → compare entities. Set query_key, select_mode, select_entity_a, select_entity_b.
+  For "which [concept] has the largest/smallest Z": set query_key and select_mode only (entities come from graph traversal).
+
+For attr/verify/select: operations locate the entity, query_key names the property to read.
+For relation: operations are optional, select_entity_a and select_entity_b name the two entities.
+"""
+
         return f"""Convert this question into an Atomic Type-KoPL program.
 
 Question: {question}
@@ -2423,7 +2505,7 @@ Question: {question}
 Available node types: {type_list}
 
 {available_relations}
-{filter_info}
+{filter_info}{answer_type_info}
 CRITICAL RULES:
 1. Each operation represents ONE HOP in the path. For N-hop queries, provide exactly N operations.
 2. Each operation specifies: src_type, tgt_type, relation, anchor_name (if applicable)
@@ -2434,7 +2516,7 @@ CRITICAL RULES:
 
 {examples}
 
-Return a JSON object with operations array, final_operation, and optionally filters array."""
+Return a JSON object with operations array, final_operation, answer_type, and optionally filters/query_key/verify_value/verify_op/select_mode/select_entity_a/select_entity_b."""
 
     def _get_prompt_examples(self) -> str:
         """プロンプト例を返す（FewShotPool優先、なければKGConfigから静的例）"""
@@ -2489,6 +2571,25 @@ Return a JSON object with operations array, final_operation, and optionally filt
                     op.anchor_name for op in result.operations if op.anchor_name
                 ]
 
+                # Extract extended answer fields from LLM result
+                _answer_type = getattr(result, 'answer_type', 'entity') or 'entity'
+                _query_key = getattr(result, 'query_key', None)
+                _verify_value = getattr(result, 'verify_value', None)
+                _verify_op = getattr(result, 'verify_op', None)
+                _select_mode = getattr(result, 'select_mode', None)
+                _select_entity_a = getattr(result, 'select_entity_a', None)
+                _select_entity_b = getattr(result, 'select_entity_b', None)
+
+                _extended_kwargs = dict(
+                    answer_type=_answer_type,
+                    query_key=_query_key,
+                    verify_value=_verify_value,
+                    verify_op=_verify_op,
+                    select_mode=_select_mode,
+                    select_entity_a=_select_entity_a,
+                    select_entity_b=_select_entity_b,
+                )
+
                 if is_intersection and len(anchors_in_ops) >= 2:
                     children = []
                     for op in result.operations:
@@ -2512,6 +2613,7 @@ Return a JSON object with operations array, final_operation, and optionally filt
                             op_type=OperationType.INTERSECTION,
                             children=children,
                             filters=result.filters,
+                            **_extended_kwargs,
                         )
 
                 # PATH クエリ
@@ -2529,14 +2631,16 @@ Return a JSON object with operations array, final_operation, and optionally filt
                         TypeRelation(src_type=op_src, tgt_type=op_tgt, relation_hint=op_rel)
                     )
 
-                if not atomic_relations:
+                # For non-entity answer types, empty operations are valid
+                if not atomic_relations and _answer_type in ('entity', 'count'):
                     raise ValueError("No valid operations generated")
 
                 return KoPLOperation(
                     op_type=OperationType.RELATE,
                     relations=atomic_relations,
-                    anchor_name=anchor,
+                    anchor_name=anchor or (result.operations[0].anchor_name if result.operations else entity_name),
                     filters=result.filters,
+                    **_extended_kwargs,
                 )
 
             except Exception as e:
@@ -3765,6 +3869,203 @@ Generate ONLY the Cypher query, nothing else:"""
             return {r["answer"] for r in records if r["answer"]}
         except Exception:
             return set()
+
+    def _resolve_extended_answer(
+        self,
+        kopl: KoPLOperation,
+        answer_entities: List[str],
+        entity_name: Optional[str],
+        log: List[str],
+    ) -> str:
+        """Phase 6: KQA-Pro extended answer type resolution.
+
+        For answer types beyond simple entity retrieval (count, attr, relation,
+        verify, select), resolve the final answer using Neo4j queries.
+        """
+        graph = self.finder.graph
+        atype = kopl.answer_type
+
+        log.append(f"Phase 6: Extended answer ({atype})")
+
+        if atype == "count":
+            ans = str(len(answer_entities))
+            log.append(f"  Count: {ans}")
+            return ans
+
+        if atype == "attr" and kopl.query_key:
+            # Query an attribute value from the first answer entity (or anchor)
+            target = answer_entities[0] if answer_entities else entity_name
+            if not target:
+                log.append("  No entity to query attribute from")
+                return ""
+            try:
+                cypher = (
+                    "MATCH (n) WHERE toLower(n.name) = toLower($name) "
+                    f"RETURN n.`{kopl.query_key}` AS val LIMIT 1"
+                )
+                records = graph.run(cypher, name=target).data()
+                if records and records[0].get("val") is not None:
+                    ans = str(records[0]["val"])
+                    log.append(f"  QueryAttr({kopl.query_key}) on '{target}': {ans}")
+                    return ans
+                else:
+                    log.append(f"  QueryAttr({kopl.query_key}) on '{target}': no value")
+                    return ""
+            except Exception as e:
+                log.append(f"  QueryAttr error: {e}")
+                return ""
+
+        if atype == "relation":
+            # Find relation name between two entities
+            ent_a = kopl.select_entity_a or entity_name
+            ent_b = kopl.select_entity_b
+            if not ent_a or not ent_b:
+                log.append("  Need two entities for relation query")
+                return ""
+            try:
+                cypher = (
+                    "MATCH (a)-[r]-(b) "
+                    "WHERE toLower(a.name) = toLower($a) AND toLower(b.name) = toLower($b) "
+                    "RETURN type(r) AS rel LIMIT 5"
+                )
+                records = graph.run(cypher, a=ent_a, b=ent_b).data()
+                if records:
+                    rels = [r["rel"] for r in records]
+                    ans = rels[0].replace("_", " ")
+                    log.append(f"  QueryRelation('{ent_a}', '{ent_b}'): {rels}")
+                    return ans
+                else:
+                    log.append(f"  No relation found between '{ent_a}' and '{ent_b}'")
+                    return ""
+            except Exception as e:
+                log.append(f"  QueryRelation error: {e}")
+                return ""
+
+        if atype == "verify":
+            # Verify: check if an entity has a specific attribute value
+            target = answer_entities[0] if answer_entities else entity_name
+            if not target or not kopl.query_key:
+                log.append("  Verify: missing entity or query_key")
+                return "no"
+            try:
+                cypher = (
+                    "MATCH (n) WHERE toLower(n.name) = toLower($name) "
+                    f"RETURN n.`{kopl.query_key}` AS val LIMIT 1"
+                )
+                records = graph.run(cypher, name=target).data()
+                if records and records[0].get("val") is not None:
+                    actual = str(records[0]["val"])
+                    expected = kopl.verify_value or ""
+                    op = kopl.verify_op or "="
+                    if op == "=":
+                        match = actual.lower() == expected.lower() or expected.lower() in actual.lower()
+                    elif op == "!=":
+                        match = actual.lower() != expected.lower()
+                    elif op == ">":
+                        match = self._compare_values(actual, expected) > 0
+                    elif op == "<":
+                        match = self._compare_values(actual, expected) < 0
+                    else:
+                        match = actual.lower() == expected.lower()
+                    ans = "yes" if match else "no"
+                    log.append(f"  Verify: {kopl.query_key}='{actual}' {op} '{expected}' -> {ans}")
+                    return ans
+                else:
+                    log.append(f"  Verify: property '{kopl.query_key}' not found on '{target}'")
+                    return "no"
+            except Exception as e:
+                log.append(f"  Verify error: {e}")
+                return "no"
+
+        if atype == "select":
+            # Select: compare entities on an attribute
+            key = kopl.query_key
+            mode = (kopl.select_mode or "greater").lower()
+            if not key:
+                log.append("  Select: missing query_key")
+                return ""
+
+            # SelectBetween: compare exactly two named entities
+            if kopl.select_entity_a and kopl.select_entity_b:
+                try:
+                    vals = {}
+                    for ent in [kopl.select_entity_a, kopl.select_entity_b]:
+                        cypher = (
+                            "MATCH (n) WHERE toLower(n.name) = toLower($name) "
+                            f"RETURN n.`{key}` AS val LIMIT 1"
+                        )
+                        records = graph.run(cypher, name=ent).data()
+                        if records and records[0].get("val") is not None:
+                            vals[ent] = records[0]["val"]
+                    if len(vals) == 2:
+                        a_val = vals[kopl.select_entity_a]
+                        b_val = vals[kopl.select_entity_b]
+                        if mode in ("greater", "larger", "more", "later", "latest", "longest"):
+                            ans = kopl.select_entity_a if self._compare_values(str(a_val), str(b_val)) >= 0 else kopl.select_entity_b
+                        else:
+                            ans = kopl.select_entity_a if self._compare_values(str(a_val), str(b_val)) <= 0 else kopl.select_entity_b
+                        log.append(f"  SelectBetween: {kopl.select_entity_a}={a_val} vs {kopl.select_entity_b}={b_val} ({mode}) -> {ans}")
+                        return ans
+                    else:
+                        log.append(f"  SelectBetween: could not get values for both entities ({vals})")
+                        return ""
+                except Exception as e:
+                    log.append(f"  SelectBetween error: {e}")
+                    return ""
+
+            # SelectAmong: pick best from answer_entities
+            if answer_entities:
+                try:
+                    best_ent = None
+                    best_val = None
+                    for ent in answer_entities:
+                        cypher = (
+                            "MATCH (n) WHERE toLower(n.name) = toLower($name) "
+                            f"RETURN n.`{key}` AS val LIMIT 1"
+                        )
+                        records = graph.run(cypher, name=ent).data()
+                        if records and records[0].get("val") is not None:
+                            val = records[0]["val"]
+                            if best_val is None or (
+                                mode in ("greater", "larger", "more", "later", "latest", "longest")
+                                and self._compare_values(str(val), str(best_val)) > 0
+                            ) or (
+                                mode in ("less", "smaller", "fewer", "earlier", "earliest", "shortest", "smallest")
+                                and self._compare_values(str(val), str(best_val)) < 0
+                            ):
+                                best_ent = ent
+                                best_val = val
+                    if best_ent:
+                        log.append(f"  SelectAmong: {best_ent} ({key}={best_val}, mode={mode})")
+                        return best_ent
+                except Exception as e:
+                    log.append(f"  SelectAmong error: {e}")
+
+            log.append(f"  Select: no result")
+            return ""
+
+        # Unknown answer type — return entities as-is
+        return ""
+
+    @staticmethod
+    def _compare_values(a: str, b: str) -> int:
+        """Compare two values, trying numeric then string comparison."""
+        try:
+            fa = float(a)
+            fb = float(b)
+            return (fa > fb) - (fa < fb)
+        except (ValueError, TypeError):
+            pass
+        # Try date comparison
+        if len(a) >= 4 and len(b) >= 4:
+            try:
+                from datetime import date
+                da = date.fromisoformat(a[:10])
+                db = date.fromisoformat(b[:10])
+                return (da > db) - (da < db)
+            except (ValueError, TypeError):
+                pass
+        return (a > b) - (a < b)
 
     def _apply_kopl_operations(
         self, kopl_program: KoPLOperation, entity_sets: List[EntitySet]
