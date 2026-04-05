@@ -734,6 +734,16 @@ class ExtendedTypeKoPLPipeline:
 
         self.finder = GraphPathFinder(kg_type=kg_type)
 
+        # KQA-Pro: KB property store for attribute operations
+        self.kb_store = None
+        if kg_type == "kqapro":
+            from pipeline.extended_type_kopl.kb_property_store import KBPropertyStore
+            kb_path = os.path.join(
+                os.path.dirname(__file__), "..", "..", "data", "kqapro", "kb.json"
+            )
+            if os.path.exists(kb_path):
+                self.kb_store = KBPropertyStore(kb_path)
+
         # KGからリレーション情報をキャッシュ（use_schema_relations=Falseの場合）
         self._relation_cache: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
         self._node_label_cache: Dict[str, Set[str]] = {}
@@ -2098,39 +2108,62 @@ Step 1:"""
                 natural_answer = ""
 
             # Phase 5.5: Apply KoPL filters to answer entities (post-retrieval)
-            # This catches cases where fallbacks (4.5a/b/c) bypassed Cypher-level filtering
             if answer_entities and self._active_filters:
-                graph = self.finder.graph
-                filtered = set()
-                for f in self._active_filters:
-                    prop = f.property_name
-                    val = f.value
-                    op = getattr(f, 'operator', '=') or '='
-                    for ent in (answer_entities if isinstance(answer_entities, (set, list)) else []):
-                        try:
-                            # Build operator-aware filter
-                            if op in ('>', '<', '>=', '<='):
-                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` {op} $val RETURN n.name AS name LIMIT 1"
-                            elif op == '!=':
-                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` <> $val RETURN n.name AS name LIMIT 1"
-                            elif op == 'CONTAINS':
-                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` CONTAINS $val RETURN n.name AS name LIMIT 1"
-                            else:
-                                cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` = $val RETURN n.name AS name LIMIT 1"
-                            result = graph.run(cypher_filter, name=ent, val=val).data()
-                            if result:
-                                filtered.add(result[0]["name"])
-                        except Exception as e:
-                            logger.warning("[Filter] Error for %s: %s", ent, e)
-                if filtered:
-                    log.append(f"Phase 5.5: KoPL filter applied ({len(answer_entities)} -> {len(filtered)})")
-                    answer_entities = filtered if isinstance(answer_entities, set) else list(filtered)
+                ent_list = list(answer_entities) if isinstance(answer_entities, (set, list)) else []
+                if self.kb_store:
+                    # KQA-Pro: use KBPropertyStore for filtering
+                    for f in self._active_filters:
+                        prop = f.property_name
+                        val = f.value
+                        op = getattr(f, 'operator', '=') or '='
+                        ent_list = self.kb_store.filter_by_attr(ent_list, prop, val, op)
+                    if ent_list:
+                        log.append(f"Phase 5.5: KB filter applied ({len(answer_entities)} -> {len(ent_list)})")
+                        answer_entities = ent_list
+                    else:
+                        log.append(f"Phase 5.5: KB filter would eliminate all {len(answer_entities)} entities, skipping")
                 else:
-                    # If filter eliminates everything, keep original (filter may be invalid)
-                    log.append(f"Phase 5.5: KoPL filter would eliminate all {len(answer_entities)} entities, skipping")
+                    # Other KGs: use Neo4j property filter
+                    graph = self.finder.graph
+                    filtered = set()
+                    for f in self._active_filters:
+                        prop = f.property_name
+                        val = f.value
+                        op = getattr(f, 'operator', '=') or '='
+                        for ent in ent_list:
+                            try:
+                                if op in ('>', '<', '>=', '<='):
+                                    cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` {op} $val RETURN n.name AS name LIMIT 1"
+                                elif op == '!=':
+                                    cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` <> $val RETURN n.name AS name LIMIT 1"
+                                else:
+                                    cypher_filter = f"MATCH (n) WHERE toLower(n.name) = toLower($name) AND n.`{prop}` = $val RETURN n.name AS name LIMIT 1"
+                                result = graph.run(cypher_filter, name=ent, val=val).data()
+                                if result:
+                                    filtered.add(result[0]["name"])
+                            except Exception as e:
+                                logger.warning("[Filter] Error for %s: %s", ent, e)
+                    if filtered:
+                        log.append(f"Phase 5.5: KoPL filter applied ({len(answer_entities)} -> {len(filtered)})")
+                        answer_entities = list(filtered)
+                    else:
+                        log.append(f"Phase 5.5: KoPL filter would eliminate all {len(answer_entities)} entities, skipping")
+
+            # Phase 5.8: Dynamic property injection (KQA-Pro)
+            # For attr/verify/select, resolve query_key using actual KB properties
+            answer_type = kopl_program.answer_type if kopl_program else "entity"
+            if (
+                answer_type in ("attr", "verify", "select")
+                and kopl_program
+                and self.kb_store
+            ):
+                resolved_key = self._resolve_query_key_dynamic(
+                    kopl_program, answer_entities, entity_name, question, log
+                )
+                if resolved_key:
+                    kopl_program.query_key = resolved_key
 
             # Phase 6: Extended answer type processing (KQA-Pro)
-            answer_type = kopl_program.answer_type if kopl_program else "entity"
             if answer_type != "entity" and kopl_program:
                 natural_answer = self._resolve_extended_answer(
                     kopl_program, answer_entities, entity_name, log
@@ -3870,6 +3903,68 @@ Generate ONLY the Cypher query, nothing else:"""
         except Exception:
             return set()
 
+    def _resolve_query_key_dynamic(
+        self,
+        kopl: KoPLOperation,
+        answer_entities: List[str],
+        entity_name: Optional[str],
+        question: str,
+        log: List[str],
+    ) -> Optional[str]:
+        """Phase 5.8: Resolve query_key by showing LLM the entity's actual properties.
+
+        For attr/verify/select questions, the LLM's initial query_key may not match
+        the exact KB key. This method retrieves the entity's real properties and
+        asks the LLM to pick the correct one.
+        """
+        if not self.kb_store:
+            return None
+
+        # Determine which entity to inspect
+        if kopl.answer_type == "select" and kopl.select_entity_a:
+            target = kopl.select_entity_a
+        else:
+            target = answer_entities[0] if answer_entities else entity_name
+
+        if not target:
+            return None
+
+        # First try fuzzy match without LLM call
+        if kopl.query_key:
+            resolved = self.kb_store.resolve_key(kopl.query_key)
+            if resolved:
+                log.append(f"Phase 5.8: query_key resolved: '{kopl.query_key}' -> '{resolved}'")
+                return resolved
+
+        # Get available properties
+        props_text = self.kb_store.format_properties_for_prompt(target)
+        if not props_text:
+            log.append(f"Phase 5.8: no properties found for '{target}'")
+            return None
+
+        # Ask LLM to pick the right property
+        prompt = (
+            f"Question: {question}\n"
+            f"Entity: {target}\n"
+            f"\n{props_text}\n\n"
+            f"Which property key from the list above answers this question? "
+            f"Return ONLY the exact property key string, nothing else."
+        )
+        try:
+            response = self.llm.invoke(prompt)
+            picked = response.content.strip().strip('"').strip("'")
+            # Validate against actual keys
+            resolved = self.kb_store.resolve_key(picked)
+            if resolved:
+                log.append(f"Phase 5.8: LLM picked query_key: '{picked}' -> '{resolved}'")
+                return resolved
+            # Try the raw pick
+            log.append(f"Phase 5.8: LLM picked '{picked}' but not found in KB keys")
+            return picked
+        except Exception as e:
+            log.append(f"Phase 5.8: LLM query_key resolution failed: {e}")
+            return None
+
     def _resolve_extended_answer(
         self,
         kopl: KoPLOperation,
@@ -3879,11 +3974,12 @@ Generate ONLY the Cypher query, nothing else:"""
     ) -> str:
         """Phase 6: KQA-Pro extended answer type resolution.
 
-        For answer types beyond simple entity retrieval (count, attr, relation,
-        verify, select), resolve the final answer using Neo4j queries.
+        Uses KBPropertyStore (kb.json) for attribute lookups when available,
+        falls back to Neo4j for relation queries.
         """
         graph = self.finder.graph
         atype = kopl.answer_type
+        store = self.kb_store  # may be None for non-KQA-Pro KGs
 
         log.append(f"Phase 6: Extended answer ({atype})")
 
@@ -3893,30 +3989,19 @@ Generate ONLY the Cypher query, nothing else:"""
             return ans
 
         if atype == "attr" and kopl.query_key:
-            # Query an attribute value from the first answer entity (or anchor)
             target = answer_entities[0] if answer_entities else entity_name
             if not target:
                 log.append("  No entity to query attribute from")
                 return ""
-            try:
-                cypher = (
-                    "MATCH (n) WHERE toLower(n.name) = toLower($name) "
-                    f"RETURN n.`{kopl.query_key}` AS val LIMIT 1"
-                )
-                records = graph.run(cypher, name=target).data()
-                if records and records[0].get("val") is not None:
-                    ans = str(records[0]["val"])
-                    log.append(f"  QueryAttr({kopl.query_key}) on '{target}': {ans}")
-                    return ans
-                else:
-                    log.append(f"  QueryAttr({kopl.query_key}) on '{target}': no value")
-                    return ""
-            except Exception as e:
-                log.append(f"  QueryAttr error: {e}")
-                return ""
+            if store:
+                val = store.query_attr(target, kopl.query_key)
+                if val is not None:
+                    log.append(f"  QueryAttr({kopl.query_key}) on '{target}': {val}")
+                    return val
+                log.append(f"  QueryAttr({kopl.query_key}) on '{target}': no value in KB")
+            return ""
 
         if atype == "relation":
-            # Find relation name between two entities
             ent_a = kopl.select_entity_a or entity_name
             ent_b = kopl.select_entity_b
             if not ent_a or not ent_b:
@@ -3934,117 +4019,91 @@ Generate ONLY the Cypher query, nothing else:"""
                     ans = rels[0].replace("_", " ")
                     log.append(f"  QueryRelation('{ent_a}', '{ent_b}'): {rels}")
                     return ans
-                else:
-                    log.append(f"  No relation found between '{ent_a}' and '{ent_b}'")
-                    return ""
+                log.append(f"  No relation found between '{ent_a}' and '{ent_b}'")
+                return ""
             except Exception as e:
                 log.append(f"  QueryRelation error: {e}")
                 return ""
 
         if atype == "verify":
-            # Verify: check if an entity has a specific attribute value
             target = answer_entities[0] if answer_entities else entity_name
             if not target or not kopl.query_key:
                 log.append("  Verify: missing entity or query_key")
                 return "no"
-            try:
-                cypher = (
-                    "MATCH (n) WHERE toLower(n.name) = toLower($name) "
-                    f"RETURN n.`{kopl.query_key}` AS val LIMIT 1"
-                )
-                records = graph.run(cypher, name=target).data()
-                if records and records[0].get("val") is not None:
-                    actual = str(records[0]["val"])
-                    expected = kopl.verify_value or ""
+            if store:
+                from pipeline.extended_type_kopl.kb_property_store import comp as kb_comp
+                actual_vc = store.query_attr_value(target, kopl.query_key)
+                if actual_vc is not None:
+                    expected_vc = store.parse_value_for_key(kopl.query_key, kopl.verify_value or "")
                     op = kopl.verify_op or "="
-                    if op == "=":
-                        match = actual.lower() == expected.lower() or expected.lower() in actual.lower()
-                    elif op == "!=":
-                        match = actual.lower() != expected.lower()
-                    elif op == ">":
-                        match = self._compare_values(actual, expected) > 0
-                    elif op == "<":
-                        match = self._compare_values(actual, expected) < 0
-                    else:
-                        match = actual.lower() == expected.lower()
-                    ans = "yes" if match else "no"
-                    log.append(f"  Verify: {kopl.query_key}='{actual}' {op} '{expected}' -> {ans}")
-                    return ans
-                else:
-                    log.append(f"  Verify: property '{kopl.query_key}' not found on '{target}'")
-                    return "no"
-            except Exception as e:
-                log.append(f"  Verify error: {e}")
+                    try:
+                        if actual_vc.can_compare(expected_vc):
+                            match = kb_comp(actual_vc, expected_vc, op)
+                        else:
+                            # Fallback: string comparison
+                            match = str(actual_vc).lower() == (kopl.verify_value or "").lower()
+                        ans = "yes" if match else "no"
+                        log.append(f"  Verify: {kopl.query_key}='{actual_vc}' {op} '{kopl.verify_value}' -> {ans}")
+                        return ans
+                    except Exception as e:
+                        log.append(f"  Verify comparison error: {e}")
+                        return "no"
+                log.append(f"  Verify: property '{kopl.query_key}' not found on '{target}'")
                 return "no"
+            return "no"
 
         if atype == "select":
-            # Select: compare entities on an attribute
             key = kopl.query_key
             mode = (kopl.select_mode or "greater").lower()
             if not key:
                 log.append("  Select: missing query_key")
                 return ""
 
+            _GREATER_MODES = {"greater", "larger", "more", "later", "latest", "longest", "higher"}
+            _LESS_MODES = {"less", "smaller", "fewer", "earlier", "earliest", "shortest", "smallest", "lower"}
+
             # SelectBetween: compare exactly two named entities
-            if kopl.select_entity_a and kopl.select_entity_b:
-                try:
-                    vals = {}
-                    for ent in [kopl.select_entity_a, kopl.select_entity_b]:
-                        cypher = (
-                            "MATCH (n) WHERE toLower(n.name) = toLower($name) "
-                            f"RETURN n.`{key}` AS val LIMIT 1"
-                        )
-                        records = graph.run(cypher, name=ent).data()
-                        if records and records[0].get("val") is not None:
-                            vals[ent] = records[0]["val"]
-                    if len(vals) == 2:
-                        a_val = vals[kopl.select_entity_a]
-                        b_val = vals[kopl.select_entity_b]
-                        if mode in ("greater", "larger", "more", "later", "latest", "longest"):
-                            ans = kopl.select_entity_a if self._compare_values(str(a_val), str(b_val)) >= 0 else kopl.select_entity_b
+            if kopl.select_entity_a and kopl.select_entity_b and store:
+                a_vc = store.query_attr_value(kopl.select_entity_a, key)
+                b_vc = store.query_attr_value(kopl.select_entity_b, key)
+                if a_vc is not None and b_vc is not None and a_vc.can_compare(b_vc):
+                    try:
+                        if mode in _GREATER_MODES:
+                            ans = kopl.select_entity_a if a_vc > b_vc or a_vc == b_vc else kopl.select_entity_b
                         else:
-                            ans = kopl.select_entity_a if self._compare_values(str(a_val), str(b_val)) <= 0 else kopl.select_entity_b
-                        log.append(f"  SelectBetween: {kopl.select_entity_a}={a_val} vs {kopl.select_entity_b}={b_val} ({mode}) -> {ans}")
+                            ans = kopl.select_entity_a if a_vc < b_vc or a_vc == b_vc else kopl.select_entity_b
+                        log.append(f"  SelectBetween: {kopl.select_entity_a}={a_vc} vs {kopl.select_entity_b}={b_vc} ({mode}) -> {ans}")
                         return ans
-                    else:
-                        log.append(f"  SelectBetween: could not get values for both entities ({vals})")
+                    except Exception as e:
+                        log.append(f"  SelectBetween comparison error: {e}")
                         return ""
-                except Exception as e:
-                    log.append(f"  SelectBetween error: {e}")
-                    return ""
+                log.append(f"  SelectBetween: could not get values (a={a_vc}, b={b_vc})")
+                return ""
 
             # SelectAmong: pick best from answer_entities
-            if answer_entities:
-                try:
-                    best_ent = None
-                    best_val = None
-                    for ent in answer_entities:
-                        cypher = (
-                            "MATCH (n) WHERE toLower(n.name) = toLower($name) "
-                            f"RETURN n.`{key}` AS val LIMIT 1"
-                        )
-                        records = graph.run(cypher, name=ent).data()
-                        if records and records[0].get("val") is not None:
-                            val = records[0]["val"]
-                            if best_val is None or (
-                                mode in ("greater", "larger", "more", "later", "latest", "longest")
-                                and self._compare_values(str(val), str(best_val)) > 0
-                            ) or (
-                                mode in ("less", "smaller", "fewer", "earlier", "earliest", "shortest", "smallest")
-                                and self._compare_values(str(val), str(best_val)) < 0
-                            ):
-                                best_ent = ent
-                                best_val = val
-                    if best_ent:
-                        log.append(f"  SelectAmong: {best_ent} ({key}={best_val}, mode={mode})")
-                        return best_ent
-                except Exception as e:
-                    log.append(f"  SelectAmong error: {e}")
+            if answer_entities and store:
+                best_ent = None
+                best_vc = None
+                for ent in answer_entities:
+                    vc = store.query_attr_value(ent, key)
+                    if vc is None:
+                        continue
+                    if best_vc is None:
+                        best_ent, best_vc = ent, vc
+                    elif vc.can_compare(best_vc):
+                        try:
+                            if (mode in _GREATER_MODES and vc > best_vc) or \
+                               (mode in _LESS_MODES and vc < best_vc):
+                                best_ent, best_vc = ent, vc
+                        except Exception:
+                            pass
+                if best_ent:
+                    log.append(f"  SelectAmong: {best_ent} ({key}={best_vc}, mode={mode})")
+                    return best_ent
 
-            log.append(f"  Select: no result")
+            log.append("  Select: no result")
             return ""
 
-        # Unknown answer type — return entities as-is
         return ""
 
     @staticmethod
