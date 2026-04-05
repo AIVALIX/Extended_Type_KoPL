@@ -104,7 +104,7 @@ class SAFEPipeline:
         self._cand_node_cache: Dict[Tuple[str, str], List[Tuple[str, List[str]]]] = {}
         self._entity_labels_cache: Dict[str, List[str]] = {}
 
-    def run(self, question: str, entity_name: Optional[str] = None, n_gold: int = 0) -> SAFEResult:
+    def run(self, question: str, entity_name: Optional[str] = None) -> SAFEResult:
         """パイプライン実行"""
         # キャッシュクリア
         self._adj_rel_cache.clear()
@@ -185,7 +185,7 @@ class SAFEPipeline:
         if not answer_entities:
             # Fallback: Algorithm 2
             log.append("  Cypher returned 0 results, falling back to Algorithm 2")
-            k = max(self.k_retrieval, n_gold) if n_gold > 0 else self.k_retrieval
+            k = self.k_retrieval
             matched_subgraphs = self._subgraph_matching(best_qg, pseudo_edges, k=k)
             log.append(f"  Algorithm 2 found {len(matched_subgraphs)} matched subgraphs")
             answer_entities = self._extract_answers(matched_subgraphs, pseudo_edges)

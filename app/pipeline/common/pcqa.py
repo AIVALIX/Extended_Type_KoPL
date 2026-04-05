@@ -57,8 +57,8 @@ def resolve_pcqa_compound_entity(
         entity_type: タイプ（例: "CancerCell"）
         all_compound_names: マッチした全複合名リスト
     """
-    # Genesymbol/Fusion以外は対象外
-    if entity_type and entity_type not in ("Genesymbol", "Fusion"):
+    # Genesymbol/Fusion以外は対象外 (case-insensitive check)
+    if entity_type and entity_type.lower() not in ("genesymbol", "fusion"):
         return None
 
     # Step 1: LLMで2エンティティ抽出を試みる

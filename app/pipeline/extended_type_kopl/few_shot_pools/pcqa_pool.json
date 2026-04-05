@@ -1,0 +1,152 @@
+{
+  "examples": [
+    {
+      "question": "What type of cancer can bexarotene treat?",
+      "operations": [
+        {"src_type": "Drug", "tgt_type": "Cancer", "relation": "TREATMENT", "anchor_name": "bexarotene"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "bexarotene",
+      "entity_type": "Drug",
+      "target_type": "Cancer",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What drugs is ALK-p.L1196M in giant cell lung cancer resistant to?",
+      "operations": [
+        {"src_type": "SnvFull", "tgt_type": "CancerCell", "relation": "HAS_VAR", "anchor_name": "ALK-p.L1196M"},
+        {"src_type": "CancerCell", "tgt_type": "Drug", "relation": "RESISTANCE_TO"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "ALK-p.L1196M",
+      "entity_type": "SnvFull",
+      "target_type": "Drug",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "For queries about mutations in a cancer, path MUST go through CancerCell: SnvFull -> CancerCell (HAS_VAR) -> Drug (RESISTANCE_TO)"
+    },
+    {
+      "question": "What genetic mutations are present in ovarian cancer?",
+      "operations": [
+        {"src_type": "Cancer", "tgt_type": "CancerCell", "relation": "ORIGINATED_FROM", "anchor_name": "ovarian cancer"},
+        {"src_type": "CancerCell", "tgt_type": "SnvFull", "relation": "HAS_VAR"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "ovarian cancer",
+      "entity_type": "Cancer",
+      "target_type": "SnvFull",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "For queries about mutations in a cancer, path MUST go through CancerCell: Cancer -> CancerCell (ORIGINATED_FROM) -> SnvFull (HAS_VAR)"
+    },
+    {
+      "question": "What drugs can treat renal cell carcinoma?",
+      "operations": [
+        {"src_type": "Cancer", "tgt_type": "Drug", "relation": "TREATMENT", "anchor_name": "renal cell carcinoma"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "renal cell carcinoma",
+      "entity_type": "Cancer",
+      "target_type": "Drug",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What type of cancer can be driven by PTEN-p.R173C?",
+      "operations": [
+        {"src_type": "SnvFull", "tgt_type": "CancerCell", "relation": "HAS_VAR", "anchor_name": "PTEN-p.R173C"},
+        {"src_type": "CancerCell", "tgt_type": "Cancer", "relation": "ORIGINATED_FROM"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "PTEN-p.R173C",
+      "entity_type": "SnvFull",
+      "target_type": "Cancer",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "For queries about what cancer a mutation drives, path MUST go through CancerCell: SnvFull -> CancerCell (HAS_VAR) -> Cancer (ORIGINATED_FROM). Do NOT use Genesymbol -> Cancer (DRIVING_TO) for mutation-related queries."
+    },
+    {
+      "question": "Which genes does alectinib inhibit?",
+      "operations": [
+        {"src_type": "Drug", "tgt_type": "Genesymbol", "relation": "INHIBITION_TO", "anchor_name": "alectinib"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "alectinib",
+      "entity_type": "Drug",
+      "target_type": "Genesymbol",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "INHIBITION_TO means a drug inhibits/targets a gene. Use this when asking about drugs for a gene's mutations."
+    },
+    {
+      "question": "What genetic mutations need to be tested for palbociclib?",
+      "operations": [
+        {"src_type": "Drug", "tgt_type": "Genesymbol", "relation": "INHIBITION_TO", "anchor_name": "palbociclib"},
+        {"src_type": "Genesymbol", "tgt_type": "SnvFull", "relation": "HAS_GENE"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "palbociclib",
+      "entity_type": "Drug",
+      "target_type": "SnvFull",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "INHIBITION_TO means a drug inhibits/targets a gene. Use this when asking about drugs for a gene's mutations."
+    },
+    {
+      "question": "What drugs activate ALK?",
+      "operations": [
+        {"src_type": "Genesymbol", "tgt_type": "Drug", "relation": "ACTIVATION_TO", "anchor_name": "ALK"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "ALK",
+      "entity_type": "Genesymbol",
+      "target_type": "Drug",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What cancer cell lines are sensitive to erlotinib?",
+      "operations": [
+        {"src_type": "Drug", "tgt_type": "CancerCell", "relation": "SENSITIVITY_TO", "anchor_name": "erlotinib"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "erlotinib",
+      "entity_type": "Drug",
+      "target_type": "CancerCell",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What cancers are driven by EGFR?",
+      "operations": [
+        {"src_type": "Genesymbol", "tgt_type": "Cancer", "relation": "DRIVING_TO", "anchor_name": "EGFR"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "EGFR",
+      "entity_type": "Genesymbol",
+      "target_type": "Cancer",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Use Genesymbol -> Cancer (DRIVING_TO) only for gene-to-cancer queries, NOT for mutation-related queries."
+    },
+    {
+      "question": "What fusion genes are present in breast cancer cell lines?",
+      "operations": [
+        {"src_type": "Cancer", "tgt_type": "CancerCell", "relation": "ORIGINATED_FROM", "anchor_name": "breast cancer"},
+        {"src_type": "CancerCell", "tgt_type": "Fusion", "relation": "HAS_VAR"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "breast cancer",
+      "entity_type": "Cancer",
+      "target_type": "Fusion",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "For queries about mutations/fusions in a cancer, path MUST go through CancerCell: Cancer -> CancerCell (ORIGINATED_FROM) -> Fusion (HAS_VAR)"
+    }
+  ]
+}

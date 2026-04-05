@@ -553,32 +553,80 @@ Return JSON."""
     # Phase 6: Natural Language Answer Generation (KGT論文準拠)
     # =========================================================================
 
-    # KGT論文 (GigaScience 2025) Inference.py の2-shot few-shotプロンプト
-    _NL_INFERENCE_PROMPT = """You are a reasoning robot, and you need to perform the following two steps step by step: 1. Output a corresponding natural language sentence for each relationship chain. 2. Answer my question using natural language from step 1. 3.Translate all answers into English.
-    Note: The output format is: Output: One sentence in natural language.
-    For example:
-    (ALK-p.L1196M-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(克唑替尼) 克唑替尼
-    (ALK-p.C1156Y-巨细胞肺癌)-[:resistance_to {evidence_level: 'clinical trial - phase2'}]->(克唑替尼) 克唑替尼
-    (ALK-p.F1174V-巨细胞肺癌)-[:resistance_to {evidence_level: 'clinical study'}]->(克唑替尼) 克唑替尼
-    (ALK-p.C1156Y-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(luminespib) luminespib
-    (ALK-p.F1245C-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(克唑替尼) 克唑替尼
-    (CMTR1-ALK-巨细胞肺癌)-[:resistance_to {evidence_level: 'case report'}]->(克唑替尼) 克唑替尼
-    What drugs are resistant to ALK in giant cell lung cancer?
-    Output: ALK in giant cell lung cancer are resistant to clotozantinib and luminaspib.
+    # Shared NLG prompt (aligned with ETK for fair comparison)
+    # Based on KGT paper's 2-step CoT approach with English few-shot examples
+    _NL_INFERENCE_PROMPT = """You are a reasoning robot, and you need to perform the following two steps step by step:
+1. Output a corresponding natural language sentence for each relationship chain.
+2. Answer my question using natural language from step 1.
+Note: The output format is: Output: One sentence in natural language.
 
-    (cabozantinib)-[:treatment {fda_approved: true, nmpa_approved: false, score: '10'}]->(肾细胞癌) cabozantinib
-    (伏罗尼布)-[:treatment {fda_approved: false, nmpa_approved: true, score: '10'}]->(肾细胞癌) 伏罗尼布
-    (仑伐替尼)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 仑伐替尼
-    (纳武利尤单抗)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 纳武利尤单抗
-    (帕博利珠单抗)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 帕博利珠单抗
-    (伊匹木单抗)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 伊匹木单抗
-    (阿昔替尼)-[:treatment {fda_approved: true, nmpa_approved: true, score: '10'}]->(肾细胞癌) 阿昔替尼
-    (tivozanib)-[:treatment {fda_approved: true, nmpa_approved: false, score: '10'}]->(肾细胞癌) tivozanib
-    (temsirolimus)-[:treatment {fda_approved: true, nmpa_approved: false, score: '10'}]->(肾细胞癌) temsirolimus
-    (替加氟)-[:treatment {fda_approved: false, nmpa_approved: true, score: '10'}]->(肾细胞癌) 替加氟
-    What are the drug treatment options for renal cell carcinoma?
-    Output: Renal cell carcinoma can be treated with the following drugs: cabozantinib, voronib, lenvatinib, nivolumab, pembrolizumab, ipilimumab, acitinib, tivozanib, temsirolimus, and tigafur.
-    """
+IMPORTANT RULES:
+- Property values YES/true/True = approved, NO/false/False = not approved
+- Filter by fda_approved/nmpa_approved when the question asks about approval status
+- If no entities match the criteria, state that none exist
+
+=== EXAMPLES ===
+
+Example 1 - Cancer association:
+Subgraph:
+(MET)-[:DRIVING_TO]->(low-grade glioma)
+(MET)-[:DRIVING_TO]->(renal clear cell carcinoma)
+Question: Which types of cancer are associated with MET?
+Step 1: MET drives low-grade glioma. MET drives renal clear cell carcinoma.
+Output: MET is associated with low-grade glioma and renal clear cell carcinoma.
+
+Example 2 - Drug treatment:
+Subgraph:
+(diethylstilbestrol)-[:TREATMENT]->(breast cancer)
+(diethylstilbestrol)-[:TREATMENT]->(prostate cancer)
+Question: What types of cancer can be treated with diethylstilbestrol?
+Step 1: Diethylstilbestrol is a treatment for breast cancer. Diethylstilbestrol is a treatment for prostate cancer.
+Output: Diethylstilbestrol can treat breast cancer and prostate cancer.
+
+Example 3 - Drug inhibition:
+Subgraph:
+(TERT)-[:INHIBITION_TO]->(doxorubicin {fda_approved: YES})
+Question: What drugs can treat cancers with TERT mutations?
+Step 1: TERT is inhibited by doxorubicin (FDA approved).
+Output: Cancers with TERT mutations can be inhibited by doxorubicin.
+
+Example 4 - Gene activation:
+Subgraph:
+(codeine)-[:ACTIVATION_TO]->(OPRD1)
+(codeine)-[:ACTIVATION_TO]->(OPRK1)
+(codeine)-[:ACTIVATION_TO]->(OPRM1)
+Question: Which genes can be activated by codeine?
+Step 1: Codeine activates OPRD1. Codeine activates OPRK1. Codeine activates OPRM1.
+Output: The following genes can be activated by codeine: OPRD1, OPRK1, and OPRM1.
+
+Example 5 - NMPA-approved drugs (with filtering):
+Subgraph:
+(DDR2)-[:INHIBITION_TO]->(nilotinib {fda_approved: YES, nmpa_approved: YES})
+(DDR2)-[:INHIBITION_TO]->(dasatinib {fda_approved: YES, nmpa_approved: YES})
+(DDR2)-[:INHIBITION_TO]->(sitravatinib {fda_approved: NO, nmpa_approved: NO})
+Question: What are the NMPA-approved drugs for cancers with DDR2 mutations?
+Step 1: DDR2 is inhibited by nilotinib (NMPA approved). DDR2 is inhibited by dasatinib (NMPA approved). DDR2 is inhibited by sitravatinib (not NMPA approved).
+Output: The NMPA-approved drugs for DDR2 are nilotinib and dasatinib.
+
+Example 6 - No matching results:
+Subgraph:
+(TNKS)-[:INHIBITION_TO]->(drug1 {fda_approved: NO, nmpa_approved: NO})
+Question: What are the NMPA-approved drugs for cancers with TNKS mutations?
+Step 1: TNKS is inhibited by drug1 (not NMPA approved).
+Output: There are no NMPA-approved drugs that can treat cancers with TNKS mutations.
+
+Example 7 - Genetic mutations:
+Subgraph:
+(astrocytoma)-[:HAS_VAR]->(EGFR-p.L861R)
+(astrocytoma)-[:HAS_VAR]->(EGFR-p.G719A)
+Question: What genetic mutations are present in astrocytoma?
+Step 1: Astrocytoma has the variant EGFR-p.L861R. Astrocytoma has the variant EGFR-p.G719A.
+Output: Astrocytoma can be caused by the following genetic mutations: EGFR-p.L861R and EGFR-p.G719A.
+
+=== YOUR TASK ===
+
+Subgraph:
+"""
 
     # フォールバック用プロンプト（サブグラフ取得失敗時）
     _NL_FALLBACK_PROMPT = """You are a reasoning robot, and you need to output natural language to answer my questions.
@@ -714,7 +762,7 @@ Return JSON."""
         """サブグラフのチェーンからLLMで自然言語回答を生成（KGT論文準拠）"""
         if chains:
             chain_text = "\n".join(chains)
-            prompt = self._NL_INFERENCE_PROMPT + chain_text + "\n" + question
+            prompt = self._NL_INFERENCE_PROMPT + chain_text + "\n\nQuestion: " + question + "\n\nStep 1:"
         else:
             # フォールバック: サブグラフなしでLLMに直接回答させる
             prompt = self._NL_FALLBACK_PROMPT + question
@@ -723,18 +771,12 @@ Return JSON."""
             response = self.llm.invoke(prompt)
             answer = response.content.strip()
 
-            # "Output: " で始まる行を探す
-            for line in answer.split("\n"):
-                line = line.strip()
-                if line.startswith("Output:"):
-                    return line
-                if line and not line.startswith("("):
-                    # 最初の非チェーン行を回答とみなす
-                    if not line.startswith("Output:"):
-                        return f"Output: {line}"
-                    return line
-
-            return f"Output: {answer}" if answer else None
+            # Extract "Output: ..." from CoT response (same logic as ETK)
+            if "Output:" in answer:
+                output_idx = answer.rfind("Output:")
+                return answer[output_idx:]
+            else:
+                return f"Output: {answer}" if answer else None
         except Exception as e:
             print(f"NL generation error: {e}")
             return None

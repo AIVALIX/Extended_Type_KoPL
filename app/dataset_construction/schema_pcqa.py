@@ -180,3 +180,22 @@ ENTITY_ATTRIBUTES = {
         "drugalias.id", "drugalias.name",
     ],
 }
+
+# Filterable properties for KoPL FILTER operation
+# Maps node_type -> property_name -> {type, values (optional)}
+FILTERABLE_PROPERTIES = {
+    "Drug": {
+        "fda_approved": {"type": "string", "values": ["YES", "NO"]},
+        "nmpa_approved": {"type": "string", "values": ["YES", "NO"]},
+        "class_type": {"type": "string"},
+    },
+    "ClinicalTrial": {
+        "phase": {"type": "string"},
+        "status": {"type": "string"},
+        "gender": {"type": "string"},
+    },
+    "SnvFull": {
+        "oncogenic": {"type": "string"},
+        "biological_effect": {"type": "string"},
+    },
+}

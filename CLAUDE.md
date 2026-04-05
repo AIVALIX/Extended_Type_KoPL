@@ -42,16 +42,24 @@ docker exec -it python-primekgqa-experiment python -m app.pipeline.run_evaluatio
 ### PrimeKGQA
 | Dataset | Extended Type-KoPL |
 |---------|-------------------|
-| one_hop | 92% |
-| two_hop | 65% |
-| two_intersection | 35% |
+| one_hop | 94% |
+| two_hop | 78% |
+| two_intersection | 96% |
 
 ### MetaQA
 | Dataset | Extended Type-KoPL | SAFE | KGT |
 |---------|-------------------|------|-----|
-| 1-hop | 91% | 100% | 90% |
-| 2-hop | 95% | 90% | 58% |
+| 1-hop | 100% | 100% | 90% |
+| 2-hop | 100% | 90% | 58% |
 | 3-hop | 96% | - | 7% |
+
+> Note: Results measured with `--n 100 --random`. Reproduce via:
+> ```
+> docker exec -it python-primekgqa-experiment python -m app.pipeline.run_evaluation --kg primekgqa --pipeline extended_type_kopl --datasets one_hop two_hop two_intersection --n 100 --random
+> docker exec -it python-primekgqa-experiment python -m app.pipeline.run_evaluation --kg metaqa --pipeline extended_type_kopl --datasets 1-hop 2-hop 3-hop --n 100 --random
+> docker exec -it python-primekgqa-experiment python -m app.pipeline.run_evaluation --kg metaqa --pipeline safe --datasets 1-hop 2-hop --n 100 --random
+> docker exec -it python-primekgqa-experiment python -m app.pipeline.run_evaluation --kg metaqa --pipeline kgt --datasets 1-hop 2-hop 3-hop --n 100 --random
+> ```
 
 ## Research Agents
 See `.claude/agents/` for:

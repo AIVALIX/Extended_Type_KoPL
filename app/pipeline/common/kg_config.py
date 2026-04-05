@@ -17,6 +17,8 @@ class KGType(str, Enum):
     PRIMEKGQA = "primekgqa"
     METAQA = "metaqa"
     PCQA = "pcqa"
+    WEBQSP = "webqsp"
+    KQAPRO = "kqapro"
 
 
 @dataclass
@@ -48,6 +50,12 @@ class Neo4jConfig:
                 uri=os.getenv("NEO4J_PCQA_URI", "bolt://neo4j_pcqa:7687"),
                 user=os.getenv("NEO4J_PCQA_USER", "neo4j"),
                 password=os.getenv("NEO4J_PCQA_PASSWORD", "password"),
+            )
+        elif kg_type == KGType.WEBQSP:
+            return cls(
+                uri=os.getenv("NEO4J_WEBQSP_URI", "bolt://neo4j_webqsp:7687"),
+                user=os.getenv("NEO4J_WEBQSP_USER", "neo4j"),
+                password=os.getenv("NEO4J_WEBQSP_PASSWORD", "password"),
             )
         else:
             raise ValueError(f"Unknown KG type: {kg_type}")
@@ -179,6 +187,32 @@ class KGConfig:
         )
 
     @classmethod
+    def webqsp(cls) -> "KGConfig":
+        """WebQSP (Freebase subset)の設定"""
+        return cls(
+            kg_type=KGType.WEBQSP,
+            neo4j=Neo4jConfig.from_env(KGType.WEBQSP),
+            datasets={
+                "test": DatasetConfig(
+                    name="test",
+                    path=Path("data/webqsp/qa/test.jsonl"),
+                    entity_key="entity",
+                    answer_key="answer_nodes",
+                    relation_keys=["relation"],
+                    query_type="mixed",
+                ),
+            },
+            schema_types=[
+                "Entity", "CVT", "Film", "Person", "City_Town_Village",
+                "Book", "Musical_Recording", "TV_Episode", "Musical_Album",
+                "Organization", "Country", "Author", "Location",
+                "Deceased_Person", "Musical_Artist", "Politician",
+                "Human_Language", "TV_Program", "American_football_player",
+                "College_University",
+            ],
+        )
+
+    @classmethod
     def get(cls, kg_type: str) -> "KGConfig":
         """KGタイプから設定を取得"""
         if kg_type == "primekgqa":
@@ -187,8 +221,10 @@ class KGConfig:
             return cls.metaqa()
         elif kg_type == "pcqa":
             return cls.pcqa()
+        elif kg_type == "webqsp":
+            return cls.webqsp()
         else:
-            raise ValueError(f"Unknown KG type: {kg_type}. Available: primekgqa, metaqa, pcqa")
+            raise ValueError(f"Unknown KG type: {kg_type}. Available: primekgqa, metaqa, pcqa, webqsp")
 
 
 # デフォルト設定（後方互換性のため）

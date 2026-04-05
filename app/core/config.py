@@ -2,7 +2,10 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings
 
-BASEMODEL = "gpt-4.1-mini"  # デフォルトの LLM モデル名
+import os
+
+BASEMODEL = os.getenv("LLM_MODEL", "gpt-4.1-mini")
+LLM_API_BASE = os.getenv("LLM_API_BASE", "")  # 空=OpenAI default, 設定時=LiteLLM等のプロキシ
 
 
 class Settings(BaseSettings):

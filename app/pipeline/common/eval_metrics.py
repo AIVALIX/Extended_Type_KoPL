@@ -24,6 +24,13 @@ class PipelineOutput:
     predicted_entities: List[str]
     error: Optional[str] = None
     latency_ms: float = 0.0
+    # ステップ詳細（オプション）
+    entity_type: Optional[str] = None
+    target_type: Optional[str] = None
+    kopl_program: Optional[Dict[str, Any]] = None  # Phase 1: 生成されたKoPL
+    candidate_paths: Optional[List[str]] = None     # Phase 2: 候補パス一覧
+    selected_paths: Optional[List[str]] = None      # Phase 3/3.5: 選択されたパス
+    processing_log: Optional[List[str]] = None      # 全ステップの処理ログ
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -165,6 +172,148 @@ def check_path_match(
     normalized_gold = [normalize_relation(r) for r in gold_relations]
 
     return normalized_pred == normalized_gold
+
+
+class FailureCategory:
+    """失敗カテゴリ定数"""
+    SUCCESS = "success"
+    ERROR = "error"                # パイプライン実行エラー
+    PATH_MISMATCH = "path_mismatch"  # リレーションパスが不一致
+    NO_MATCH = "no_match"          # 予測エンティティが正解と完全不一致
+    PARTIAL_MATCH = "partial_match"  # 一部一致（recall > 0 だが accuracy = False）
+    OVER_PREDICTION = "over_prediction"  # 正解は全て含むが余分な予測あり
+
+
+def classify_failure(result: EvalResult) -> str:
+    """EvalResultの失敗カテゴリを分類"""
+    if result.error:
+        return FailureCategory.ERROR
+    if result.accuracy:
+        return FailureCategory.SUCCESS
+    if result.recall == 0.0:
+        return FailureCategory.NO_MATCH
+    if result.recall == 1.0 and result.precision < 1.0:
+        return FailureCategory.OVER_PREDICTION
+    return FailureCategory.PARTIAL_MATCH
+
+
+def analyze_failures(
+    eval_results: List[EvalResult],
+) -> Dict[str, Any]:
+    """
+    失敗分析を実行
+
+    Args:
+        eval_results: 評価結果のリスト
+
+    Returns:
+        dict: カテゴリ別の集計と失敗サンプル詳細
+    """
+    categories: Dict[str, List[Dict[str, Any]]] = {
+        FailureCategory.SUCCESS: [],
+        FailureCategory.ERROR: [],
+        FailureCategory.PATH_MISMATCH: [],
+        FailureCategory.NO_MATCH: [],
+        FailureCategory.PARTIAL_MATCH: [],
+        FailureCategory.OVER_PREDICTION: [],
+    }
+
+    for r in eval_results:
+        cat = classify_failure(r)
+        detail: Dict[str, Any] = {
+            "idx": r.idx,
+            "question": r.question,
+            "entity_name": r.entity_name,
+            "gold_answers": r.gold_answers,
+            "predicted_entities": r.predicted_entities,
+            "gold_relations": r.gold_relations,
+            "predicted_relations": r.predicted_relations,
+            "recall": r.recall,
+            "precision": r.precision,
+            "f1": r.f1,
+            "path_match": r.path_match,
+        }
+        if r.error:
+            detail["error"] = r.error
+        categories[cat].append(detail)
+
+        # path_mismatch は accuracy とは独立に追跡
+        if not r.path_match and r.predicted_relations and r.gold_relations:
+            if cat != FailureCategory.ERROR:
+                categories[FailureCategory.PATH_MISMATCH].append(detail)
+
+    total = len(eval_results)
+    summary = {
+        "total": total,
+        "counts": {k: len(v) for k, v in categories.items()},
+        "rates": {
+            k: len(v) / total * 100 if total > 0 else 0.0
+            for k, v in categories.items()
+        },
+        "details": categories,
+    }
+    return summary
+
+
+def save_failure_analysis(
+    analysis: Dict[str, Any],
+    output_path: Path,
+    pipeline_name: str,
+    dataset_name: str,
+) -> Path:
+    """
+    失敗分析をJSONファイルに保存
+
+    Returns:
+        Path: 保存先ファイルパス
+    """
+    output_path.mkdir(parents=True, exist_ok=True)
+    file_path = output_path / f"{pipeline_name}_{dataset_name}_failures.json"
+
+    # detailsは失敗カテゴリのみ保存（successは除外して軽量化）
+    save_data = {
+        "total": analysis["total"],
+        "counts": analysis["counts"],
+        "rates": analysis["rates"],
+        "failures": {
+            k: v for k, v in analysis["details"].items()
+            if k != FailureCategory.SUCCESS
+        },
+    }
+
+    with file_path.open("w", encoding="utf-8") as f:
+        json.dump(save_data, f, ensure_ascii=False, indent=2)
+
+    return file_path
+
+
+def print_failure_summary(analysis: Dict[str, Any]) -> None:
+    """失敗分析サマリーを表示"""
+    counts = analysis["counts"]
+    rates = analysis["rates"]
+    total = analysis["total"]
+
+    print(f"    --- Failure Analysis ---")
+    print(f"    Success:         {counts['success']:>4} ({rates['success']:.1f}%)")
+    print(f"    Error:           {counts['error']:>4} ({rates['error']:.1f}%)")
+    print(f"    No Match:        {counts['no_match']:>4} ({rates['no_match']:.1f}%)")
+    print(f"    Partial Match:   {counts['partial_match']:>4} ({rates['partial_match']:.1f}%)")
+    print(f"    Over Prediction: {counts['over_prediction']:>4} ({rates['over_prediction']:.1f}%)")
+    print(f"    Path Mismatch:   {counts['path_mismatch']:>4} ({rates['path_mismatch']:.1f}%)")
+
+    # 失敗サンプルを最大3件表示
+    for cat in [FailureCategory.ERROR, FailureCategory.NO_MATCH, FailureCategory.PARTIAL_MATCH]:
+        details = analysis["details"][cat]
+        if not details:
+            continue
+        print(f"    --- {cat} samples (up to 3) ---")
+        for d in details[:3]:
+            print(f"      [{d['idx']}] Q: {d['question'][:70]}")
+            print(f"           Gold:  {d['gold_answers'][:5]}")
+            print(f"           Pred:  {d['predicted_entities'][:5]}")
+            if d.get("error"):
+                print(f"           Error: {d['error'][:80]}")
+            print()
 
 
 def aggregate_metrics(
@@ -325,6 +474,28 @@ class NLEvalResult:
         }
 
 
+def _rouge_l_fallback(gold: str, predicted: str) -> Dict[str, float]:
+    """Pure-Python ROUGE-L using LCS."""
+    gold_tokens = gold.strip().split()
+    pred_tokens = predicted.strip().split()
+    if not gold_tokens or not pred_tokens:
+        return {"r": 0.0, "p": 0.0, "f": 0.0}
+    # LCS length via DP
+    m, n = len(gold_tokens), len(pred_tokens)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if gold_tokens[i - 1].lower() == pred_tokens[j - 1].lower():
+                dp[i][j] = dp[i - 1][j - 1] + 1
+            else:
+                dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+    lcs_len = dp[m][n]
+    r = lcs_len / m if m > 0 else 0.0
+    p = lcs_len / n if n > 0 else 0.0
+    f = (2 * r * p / (r + p)) if (r + p) > 0 else 0.0
+    return {"r": r, "p": p, "f": f}
+
+
 def compute_rouge_l(gold: str, predicted: str) -> Dict[str, float]:
     """
     ROUGE-Lスコアを計算（KGT論文準拠: rouge Pythonライブラリ使用）
@@ -336,18 +507,19 @@ def compute_rouge_l(gold: str, predicted: str) -> Dict[str, float]:
     Returns:
         dict: {"r": recall, "p": precision, "f": f1}
     """
-    from rouge import Rouge
-
     # 空文字列の場合は0を返す
     if not gold or not predicted or not gold.strip() or not predicted.strip():
         return {"r": 0.0, "p": 0.0, "f": 0.0}
 
     try:
+        from rouge import Rouge
+
         rouge = Rouge()
         scores = rouge.get_scores(predicted, gold)
         return scores[0]["rouge-l"]
-    except Exception:
-        return {"r": 0.0, "p": 0.0, "f": 0.0}
+    except ImportError:
+        # Fallback: pure-Python ROUGE-L (LCS-based)
+        return _rouge_l_fallback(gold, predicted)
 
 
 def compute_embedding_similarity(

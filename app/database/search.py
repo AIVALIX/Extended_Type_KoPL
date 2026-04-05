@@ -40,6 +40,14 @@ class GraphPathFinder:
             uri = os.getenv("NEO4J_PCQA_URI", "bolt://neo4j_pcqa:7687")
             user = os.getenv("NEO4J_PCQA_USER", "neo4j")
             password = os.getenv("NEO4J_PCQA_PASSWORD", "password")
+        elif kg_type == "webqsp":
+            uri = os.getenv("NEO4J_WEBQSP_URI", "bolt://neo4j_webqsp:7687")
+            user = os.getenv("NEO4J_WEBQSP_USER", "neo4j")
+            password = os.getenv("NEO4J_WEBQSP_PASSWORD", "password")
+        elif kg_type == "kqapro":
+            uri = os.getenv("NEO4J_KQAPRO_URI", "bolt://neo4j_kqapro:7687")
+            user = os.getenv("NEO4J_KQAPRO_USER", "neo4j")
+            password = os.getenv("NEO4J_KQAPRO_PASSWORD", "password")
         else:
             uri = s.NEO4J_URI
             user = s.NEO4J_USERNAME
@@ -395,6 +403,119 @@ class GraphPathFinder:
         names = [row["name"] for row in rows]
         vecs = [np.asarray(row["vec"], dtype=np.float32) for row in rows]
         return names, vecs
+
+    def get_local_schema_edges(
+        self, entity_name: str, max_hops: int = 2
+    ) -> List[Tuple[str, str, str, str, int, bool]]:
+        """Get schema edges reachable from *entity_name* within *max_hops*.
+
+        Returns a list of ``(src_label, relation_type, tgt_label, '->', freq, is_1hop)``
+        tuples discovered from the neighbourhood of the given entity.
+        *freq* is the number of concrete edges matching the schema pattern.
+        *is_1hop* indicates whether the edge is directly connected to the anchor.
+        """
+        if max_hops >= 2:
+            query = """
+            MATCH (start {name: $name})
+            CALL {
+                WITH start
+                MATCH (start)-[r]->(n1)
+                RETURN labels(start)[0] AS src, type(r) AS rel, labels(n1)[0] AS tgt, true AS is_1hop
+                UNION ALL
+                WITH start
+                MATCH (start)<-[r]-(n1)
+                RETURN labels(n1)[0] AS src, type(r) AS rel, labels(start)[0] AS tgt, true AS is_1hop
+                UNION ALL
+                WITH start
+                MATCH (start)-[]->(n1)-[r2]->(n2)
+                RETURN labels(n1)[0] AS src, type(r2) AS rel, labels(n2)[0] AS tgt, false AS is_1hop
+                UNION ALL
+                WITH start
+                MATCH (start)-[]->(n1)<-[r2]-(n2)
+                RETURN labels(n2)[0] AS src, type(r2) AS rel, labels(n1)[0] AS tgt, false AS is_1hop
+                UNION ALL
+                WITH start
+                MATCH (start)<-[]-(n1)-[r2]->(n2)
+                RETURN labels(n1)[0] AS src, type(r2) AS rel, labels(n2)[0] AS tgt, false AS is_1hop
+                UNION ALL
+                WITH start
+                MATCH (start)<-[]-(n1)<-[r2]-(n2)
+                RETURN labels(n2)[0] AS src, type(r2) AS rel, labels(n1)[0] AS tgt, false AS is_1hop
+            }
+            RETURN src, rel, tgt, is_1hop, count(*) AS freq
+            ORDER BY freq DESC
+            """
+        else:
+            query = """
+            MATCH (start {name: $name})
+            CALL {
+                WITH start
+                MATCH (start)-[r]->(n1)
+                RETURN labels(start)[0] AS src, type(r) AS rel, labels(n1)[0] AS tgt, true AS is_1hop
+                UNION ALL
+                WITH start
+                MATCH (start)<-[r]-(n1)
+                RETURN labels(n1)[0] AS src, type(r) AS rel, labels(start)[0] AS tgt, true AS is_1hop
+            }
+            RETURN src, rel, tgt, is_1hop, count(*) AS freq
+            ORDER BY freq DESC
+            """
+        result = self.graph.run(query, name=entity_name).data()
+        return [
+            (r["src"], r["rel"], r["tgt"], "->", r["freq"], r["is_1hop"])
+            for r in result
+        ]
+
+    def get_local_schema_edges_cvt_collapsed(
+        self, entity_name: str, max_hops: int = 2
+    ) -> List[Tuple[str, str, str, str, int, bool]]:
+        """Get schema edges with CVT nodes collapsed into direct edges.
+
+        For patterns like (Person)-[r1]->(CVT)-[r2]->(Film), returns a single
+        collapsed edge (Person)-[r1..r2]->(Film) with the CVT node removed.
+        Non-CVT edges are returned as-is.
+        """
+        query = """
+        MATCH (start {name: $name})
+        CALL {
+            WITH start
+            MATCH (start)-[r]->(n1)
+            WHERE NOT n1:CVT
+            RETURN labels(start)[0] AS src, type(r) AS rel, labels(n1)[0] AS tgt, true AS is_1hop
+            UNION ALL
+            WITH start
+            MATCH (start)<-[r]-(n1)
+            WHERE NOT n1:CVT
+            RETURN labels(n1)[0] AS src, type(r) AS rel, labels(start)[0] AS tgt, true AS is_1hop
+            UNION ALL
+            WITH start
+            MATCH (start)-[r1]->(cvt:CVT)-[r2]->(n1)
+            WHERE NOT n1:CVT
+            RETURN labels(start)[0] AS src, type(r1) + '..' + type(r2) AS rel, labels(n1)[0] AS tgt, true AS is_1hop
+            UNION ALL
+            WITH start
+            MATCH (start)<-[r1]-(cvt:CVT)<-[r2]-(n1)
+            WHERE NOT n1:CVT
+            RETURN labels(n1)[0] AS src, type(r2) + '..' + type(r1) AS rel, labels(start)[0] AS tgt, true AS is_1hop
+            UNION ALL
+            WITH start
+            MATCH (start)-[r1]->(cvt:CVT)<-[r2]-(n1)
+            WHERE NOT n1:CVT
+            RETURN labels(start)[0] AS src, type(r1) + '..' + type(r2) AS rel, labels(n1)[0] AS tgt, true AS is_1hop
+            UNION ALL
+            WITH start
+            MATCH (start)<-[r1]-(cvt:CVT)-[r2]->(n1)
+            WHERE NOT n1:CVT
+            RETURN labels(n1)[0] AS src, type(r1) + '..' + type(r2) AS rel, labels(start)[0] AS tgt, true AS is_1hop
+        }
+        RETURN src, rel, tgt, is_1hop, count(*) AS freq
+        ORDER BY freq DESC
+        """
+        result = self.graph.run(query, name=entity_name).data()
+        return [
+            (r["src"], r["rel"], r["tgt"], "->", r["freq"], r["is_1hop"])
+            for r in result
+        ]
 
     def get_all_relations(self) -> List[Tuple[str, str, str]]:
         """KGから全てのリレーション情報を取得

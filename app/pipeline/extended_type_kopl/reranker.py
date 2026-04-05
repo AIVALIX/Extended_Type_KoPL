@@ -32,6 +32,7 @@ class BaseReranker(ABC):
         top_k: int = 1,
         relation_hints: Optional[List[str]] = None,
         kopl_program=None,
+        trial_samples=None,
     ) -> List:
         """候補パスを再ランキングしてtop_k個を返す"""
         pass
@@ -47,6 +48,7 @@ class NoOpReranker(BaseReranker):
         top_k: int = 1,
         relation_hints: Optional[List[str]] = None,
         kopl_program=None,
+        trial_samples=None,
     ) -> List:
         return candidate_paths[:top_k]
 
@@ -82,12 +84,17 @@ class LLMReranker(BaseReranker):
                     parts.append(f" -[{rel}]-> ")
         return "".join(parts)
 
-    def _build_prompt(self, question: str, candidate_paths: List, relation_hints: Optional[List[str]] = None, kopl_program=None) -> str:
+    def _build_prompt(self, question: str, candidate_paths: List, relation_hints: Optional[List[str]] = None, kopl_program=None, trial_samples=None) -> str:
         """プロンプトを構築"""
         paths_text = ""
         for i, path in enumerate(candidate_paths):
             desc = self._get_path_description(path)
-            paths_text += f"{i}. {desc}\n"
+            paths_text += f"{i}. {desc}"
+            # Cypher trial結果を追加
+            if trial_samples and id(path) in trial_samples:
+                samples = trial_samples[id(path)]
+                paths_text += f"  → Example results: {', '.join(samples[:5])}"
+            paths_text += "\n"
 
         # KoPLプログラムの情報をプロンプトに追加
         kopl_text = ""
@@ -101,6 +108,14 @@ class LLMReranker(BaseReranker):
                 kopl_lines.append(f"  Hop {i+1}: {rel.src_type} -> {rel.tgt_type}{hint}")
             kopl_text = "LLM-generated query plan:\n" + "\n".join(kopl_lines) + "\n"
 
+        # trial結果がある場合は追加指示
+        trial_instruction = ""
+        if trial_samples:
+            trial_instruction = """
+- IMPORTANT: Each candidate path shows "Example results" from the actual knowledge graph.
+- Compare the example results against what the question is asking for.
+- Choose the path whose example results best match the expected answer type."""
+
         prompt = f"""You are a knowledge graph expert. Select the single best path that answers the question.
 
 Question: {question}
@@ -112,7 +127,7 @@ IMPORTANT:
 - Do NOT simply match relation names to words in the question. Relation names in the KG may use abbreviations or different terminology than the question.
 - Consider what each relation semantically means in the context of the knowledge graph.
 - The query plan hints are approximate and may not exactly match any relation name in the KG.
-- Think step-by-step about which path correctly captures the reasoning chain needed to answer the question.
+- Think step-by-step about which path correctly captures the reasoning chain needed to answer the question.{trial_instruction}
 
 Return the index (0-indexed) of the best path."""
 
@@ -125,6 +140,7 @@ Return the index (0-indexed) of the best path."""
         top_k: int = 1,
         relation_hints: Optional[List[str]] = None,
         kopl_program=None,
+        trial_samples=None,
     ) -> List:
         """LLMで最適なパスを選択"""
 
@@ -134,7 +150,7 @@ Return the index (0-indexed) of the best path."""
         if len(candidate_paths) == 1:
             return candidate_paths
 
-        prompt = self._build_prompt(question, candidate_paths, relation_hints, kopl_program)
+        prompt = self._build_prompt(question, candidate_paths, relation_hints, kopl_program, trial_samples)
 
         try:
             llm_with_output = self.llm.with_structured_output(PathSelectionResponse)
@@ -178,10 +194,11 @@ class HybridReranker(BaseReranker):
         top_k: int = 1,
         relation_hints: Optional[List[str]] = None,
         kopl_program=None,
+        trial_samples=None,
     ) -> List:
         """ベクトルスコアを考慮しつつLLMで再ランキング"""
         # まずLLMで再ランキング
-        return self.llm_reranker.rerank(question, candidate_paths, top_k, relation_hints, kopl_program)
+        return self.llm_reranker.rerank(question, candidate_paths, top_k, relation_hints, kopl_program, trial_samples)
 
 
 def create_reranker(

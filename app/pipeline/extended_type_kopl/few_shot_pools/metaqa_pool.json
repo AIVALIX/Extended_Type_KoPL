@@ -1,0 +1,141 @@
+{
+  "examples": [
+    {
+      "question": "Who directed Titanic?",
+      "operations": [
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "DIRECTED_BY", "anchor_name": "Titanic"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Titanic",
+      "entity_type": "Movie",
+      "target_type": "Person",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "Who directed the movies that Tom Hanks starred in?",
+      "operations": [
+        {"src_type": "Person", "tgt_type": "Movie", "relation": "STARRED_ACTORS", "anchor_name": "Tom Hanks"},
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "DIRECTED_BY"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Tom Hanks",
+      "entity_type": "Person",
+      "target_type": "Person",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "Who starred in the movies written by the writers of The Matrix?",
+      "operations": [
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "WRITTEN_BY", "anchor_name": "The Matrix"},
+        {"src_type": "Person", "tgt_type": "Movie", "relation": "WRITTEN_BY"},
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "STARRED_ACTORS"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "The Matrix",
+      "entity_type": "Movie",
+      "target_type": "Person",
+      "hop_count": 3,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What movies did Steven Spielberg direct?",
+      "operations": [
+        {"src_type": "Person", "tgt_type": "Movie", "relation": "DIRECTED_BY", "anchor_name": "Steven Spielberg"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Steven Spielberg",
+      "entity_type": "Person",
+      "target_type": "Movie",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "Who starred in Inception?",
+      "operations": [
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "STARRED_ACTORS", "anchor_name": "Inception"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Inception",
+      "entity_type": "Movie",
+      "target_type": "Person",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What genre is Pulp Fiction?",
+      "operations": [
+        {"src_type": "Movie", "tgt_type": "Text", "relation": "HAS_GENRE", "anchor_name": "Pulp Fiction"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Pulp Fiction",
+      "entity_type": "Movie",
+      "target_type": "Text",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What language is Amelie in?",
+      "operations": [
+        {"src_type": "Movie", "tgt_type": "Language", "relation": "IN_LANGUAGE", "anchor_name": "Amelie"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Amelie",
+      "entity_type": "Movie",
+      "target_type": "Language",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "Who wrote the movies that Brad Pitt starred in?",
+      "operations": [
+        {"src_type": "Person", "tgt_type": "Movie", "relation": "STARRED_ACTORS", "anchor_name": "Brad Pitt"},
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "WRITTEN_BY"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Brad Pitt",
+      "entity_type": "Person",
+      "target_type": "Person",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "Who starred in the movies directed by the directors of Forrest Gump?",
+      "operations": [
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "DIRECTED_BY", "anchor_name": "Forrest Gump"},
+        {"src_type": "Person", "tgt_type": "Movie", "relation": "DIRECTED_BY"},
+        {"src_type": "Movie", "tgt_type": "Person", "relation": "STARRED_ACTORS"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Forrest Gump",
+      "entity_type": "Movie",
+      "target_type": "Person",
+      "hop_count": 3,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    },
+    {
+      "question": "What are the genres of movies directed by Christopher Nolan?",
+      "operations": [
+        {"src_type": "Person", "tgt_type": "Movie", "relation": "DIRECTED_BY", "anchor_name": "Christopher Nolan"},
+        {"src_type": "Movie", "tgt_type": "Text", "relation": "HAS_GENRE"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Christopher Nolan",
+      "entity_type": "Person",
+      "target_type": "Text",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type. Only the first operation has anchor_name."
+    }
+  ]
+}

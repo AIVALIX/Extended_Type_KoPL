@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import warnings
 import multiprocessing as mp
@@ -103,6 +104,9 @@ from pipeline.common.eval_metrics import (
     compute_rouge_l,
     compute_embedding_similarity,
     save_pipeline_outputs,
+    analyze_failures,
+    save_failure_analysis,
+    print_failure_summary,
 )
 from pipeline.common.kg_config import KGConfig, KGType
 
@@ -192,7 +196,27 @@ DATASETS_METAQA = {
 # データセット設定（PcQA - Pan-cancer QA）
 DATASETS_PCQA = {
     "all": {
-        "path": "data/pcqa/qa/eval_v2.jsonl",  # Cypher-verified dataset with entity/path/filters (241 samples)
+        "path": "data/pcqa/qa/eval_v3.jsonl",  # Cypher-verified dataset with entity/path/filters (352 samples, 100% coverage)
+        "entity_key": "entity",
+        "gold_relations_keys": ["relation"],
+        "gold_answers_key": "answers",
+    },
+}
+
+# データセット設定（WebQSP - Freebase subset）
+DATASETS_WEBQSP = {
+    "test": {
+        "path": "data/webqsp/qa/test.jsonl",
+        "entity_key": "entity",
+        "gold_relations_keys": ["relation"],
+        "gold_answers_key": "answer_nodes",
+    },
+}
+
+# データセット設定（KQA Pro - Wikidata subset）
+DATASETS_KQAPRO = {
+    "val": {
+        "path": "data/kqapro/qa/val_entity.jsonl",
         "entity_key": "entity",
         "gold_relations_keys": ["relation"],
         "gold_answers_key": "answers",
@@ -205,6 +229,8 @@ DATASETS_BY_KG = {
     "primekgqa_raw": DATASETS_PRIMEKGQA_RAW,
     "metaqa": DATASETS_METAQA,
     "pcqa": DATASETS_PCQA,
+    "webqsp": DATASETS_WEBQSP,
+    "kqapro": DATASETS_KQAPRO,
 }
 
 # 後方互換性のため
@@ -258,12 +284,40 @@ PIPELINE_CONFIGS_PCQA = {
     },
 }
 
+# パイプライン設定（WebQSP）
+PIPELINE_CONFIGS_WEBQSP = {
+    "extended_type_kopl": {
+        "name": "Extended Type-KoPL",
+        "datasets": ["test"],
+    },
+    # WIP: SAFE/KGT require WebQSP schema definitions before producing valid results.
+    # Added for fairness — all pipelines should be evaluable on all KGs.
+    "safe": {
+        "name": "SAFE",
+        "datasets": ["test"],
+    },
+    "kgt": {
+        "name": "KGT",
+        "datasets": ["test"],
+    },
+}
+
+# パイプライン設定（KQA Pro）
+PIPELINE_CONFIGS_KQAPRO = {
+    "extended_type_kopl": {
+        "name": "Extended Type-KoPL",
+        "datasets": ["val"],
+    },
+}
+
 # KGごとのパイプライン設定
 PIPELINE_CONFIGS_BY_KG = {
     "primekgqa": PIPELINE_CONFIGS_PRIMEKGQA,
     "primekgqa_raw": PIPELINE_CONFIGS_PRIMEKGQA,  # 同じパイプライン設定を共有
     "metaqa": PIPELINE_CONFIGS_METAQA,
     "pcqa": PIPELINE_CONFIGS_PCQA,
+    "webqsp": PIPELINE_CONFIGS_WEBQSP,
+    "kqapro": PIPELINE_CONFIGS_KQAPRO,
 }
 
 # 後方互換性のため
@@ -282,6 +336,8 @@ DATASET_NAMES = {
     "3hop": "3-hop",
     # PcQA
     "all": "all",
+    # WebQSP
+    "test": "test",
 }
 
 
@@ -352,7 +408,11 @@ class PipelineRunner:
 
         # 正解データ
         answers_key = dataset_config.get("gold_answers_key", "answer_nodes")
-        gold_answers = [node["name"] for node in sample.get(answers_key, [])]
+        raw_answers = sample.get(answers_key, [])
+        if raw_answers and isinstance(raw_answers[0], dict):
+            gold_answers = [node["name"] for node in raw_answers]
+        else:
+            gold_answers = list(raw_answers)
         gold_relations = [
             sample.get(k, "")
             for k in dataset_config["gold_relations_keys"]
@@ -385,6 +445,24 @@ class PipelineRunner:
 
             output.predicted_relations = self._extract_relations(result)
             output.predicted_entities = self._extract_entities(result)
+
+            # ステップ詳細を保存
+            if hasattr(result, "processing_log"):
+                output.processing_log = result.processing_log
+            if hasattr(result, "kopl_program") and result.kopl_program:
+                kp = result.kopl_program
+                output.kopl_program = {
+                    "op_type": kp.op_type.value if hasattr(kp.op_type, "value") else str(kp.op_type),
+                    "relations": [
+                        {"src": r.src_type, "rel": r.relation_hint, "tgt": r.tgt_type}
+                        for r in kp.relations
+                    ],
+                    "anchor": kp.anchor_name,
+                }
+            if hasattr(result, "candidate_paths"):
+                output.candidate_paths = [p.to_text() for p in result.candidate_paths[:20]]
+            if hasattr(result, "selected_paths"):
+                output.selected_paths = [p.to_text() for p in result.selected_paths]
 
         except Exception as e:
             output.error = str(e)
@@ -536,7 +614,11 @@ def run_pipeline_evaluation(
             question = sample.get("question", "")
             entity_name = sample.get(dataset_config["entity_key"], "")
             answers_key = dataset_config.get("gold_answers_key", "answer_nodes")
-            gold_answers = [node["name"] for node in sample.get(answers_key, [])]
+            raw_answers = sample.get(answers_key, [])
+            if raw_answers and isinstance(raw_answers[0], dict):
+                gold_answers = [node["name"] for node in raw_answers]
+            else:
+                gold_answers = list(raw_answers)
             gold_relations = [
                 sample.get(k, "")
                 for k in dataset_config["gold_relations_keys"]
@@ -667,10 +749,14 @@ def run_pipeline_evaluation(
         ]
         metrics = aggregate_metrics(result_dicts, len(result_dicts))
 
+        # 失敗分析
+        failure_analysis = analyze_failures(eval_results)
+
         results[dataset_name] = {
             "metrics": metrics,
             "outputs": outputs,
             "eval_results": eval_results,
+            "failure_analysis": failure_analysis,
         }
 
         # 結果表示
@@ -681,6 +767,16 @@ def run_pipeline_evaluation(
         print(f"    PathAcc:   {metrics.get('path_accuracy', 0):.1f}%")
         print(f"    Errors:    {metrics['errors']}/{metrics['total']}")
         print(f"    Latency:   {metrics['avg_latency_ms']:.0f}ms")
+
+        # 失敗分析表示
+        print_failure_summary(failure_analysis)
+
+        # 失敗分析の保存
+        if output_dir:
+            fa_path = save_failure_analysis(
+                failure_analysis, output_dir, pipeline_id, dataset_name
+            )
+            print(f"    Failures saved to: {fa_path}")
 
     return results
 
@@ -701,7 +797,7 @@ def run_nl_evaluation(
 
     nl_data:
       - "pcqa": PcQA.json全405サンプル（デフォルト）
-      - "eval_v2": eval_v2.jsonlの241サンプル（属性フィルタ不要な質問のみ）
+      - "eval_v3": eval_v3.jsonlの241サンプル（属性フィルタ不要な質問のみ）
     """
     import random as _random
 
@@ -714,9 +810,9 @@ def run_nl_evaluation(
     with pcqa_path.open("r", encoding="utf-8") as f:
         pcqa_all = json.load(f)
 
-    if nl_data == "eval_v2":
-        # eval_v2.jsonlからquestion + entity_nameを取得、PcQA.jsonからgold NL answerを取得
-        eval_path = Path("data/pcqa/qa/eval_v2.jsonl")
+    if nl_data == "eval_v3":
+        # eval_v3.jsonlからquestion + entity_nameを取得、PcQA.jsonからgold NL answerを取得
+        eval_path = Path("data/pcqa/qa/eval_v3.jsonl")
         if not eval_path.exists():
             print(f"  [ERROR] {eval_path} not found")
             return {}
@@ -726,7 +822,7 @@ def run_nl_evaluation(
             for line in f:
                 eval_samples.append(json.loads(line.strip()))
 
-        print(f"  Loaded {len(eval_samples)} samples from eval_v2.jsonl")
+        print(f"  Loaded {len(eval_samples)} samples from eval_v3.jsonl")
 
         # (orig_idx, {"question": ..., "answer": ..., "entity_name": ...}) のリストを構築
         # original_index は1ベース → 0ベースに変換
@@ -965,7 +1061,7 @@ Examples:
         "--kg",
         type=str,
         default="primekgqa",
-        choices=["primekgqa", "primekgqa_raw", "metaqa", "pcqa"],
+        choices=["primekgqa", "primekgqa_raw", "metaqa", "pcqa", "webqsp", "kqapro"],
         help="Knowledge Graph to use (default: primekgqa). primekgqa_raw uses no-paraphrase dataset.",
     )
     p.add_argument("--pipeline", type=str, nargs="+", help="Pipeline(s) to evaluate")
@@ -1028,6 +1124,30 @@ Examples:
         help="Number of candidates to pass to reranker (default: 10)",
     )
     p.add_argument(
+        "--use-llm-cypher",
+        action="store_true",
+        default=False,
+        help="Use LLM-generated Cypher in ETK Phase 4 instead of templates",
+    )
+    p.add_argument(
+        "--n-kopl-candidates",
+        type=int,
+        default=1,
+        help="Number of KoPL candidates to generate (>1 enables multi-candidate selection by schema score, default: 1)",
+    )
+    p.add_argument(
+        "--schema-distill",
+        action="store_true",
+        default=False,
+        help="Enable enhanced schema distillation for Phase 1 prompt (NL forms, frequency hints, relevance sorting)",
+    )
+    p.add_argument(
+        "--max-correction-rounds",
+        type=int,
+        default=0,
+        help="Max Phase 1→2 correction rounds when Phase 2 returns 0 paths (default: 0, disabled)",
+    )
+    p.add_argument(
         "--per-sample-timeout",
         type=float,
         default=300.0,
@@ -1040,9 +1160,39 @@ Examples:
         help="Max inflight tasks for parallel execution (default: workers*2)",
     )
     p.add_argument(
+        "--few-shot-k",
+        type=int,
+        default=3,
+        help="Number of dynamic few-shot examples to select via MMR (default: 3)",
+    )
+    p.add_argument(
+        "--few-shot-pool",
+        type=str,
+        default=None,
+        help="Path to few-shot pool JSON (enables retrieval-based few-shot). Use 'auto' to auto-detect from KG type.",
+    )
+    p.add_argument(
         "--no-schema",
         action="store_true",
         help="Run without schema relations (only type enumeration, relations from KG)",
+    )
+    p.add_argument(
+        "--cypher-informed-rerank",
+        action="store_true",
+        default=False,
+        help="Enable Cypher-Informed Reranking: trial-execute candidate paths and show example results to Reranker",
+    )
+    p.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="LLM model name (default: env LLM_MODEL or gpt-4.1-mini). Use 'ollama/gemma3:27b' for local LLM via LiteLLM.",
+    )
+    p.add_argument(
+        "--api-base",
+        type=str,
+        default=None,
+        help="LLM API base URL (default: env LLM_API_BASE). E.g., 'http://100.96.246.39:4000/v1' for LiteLLM proxy.",
     )
     p.add_argument(
         "--eval-mode",
@@ -1055,10 +1205,24 @@ Examples:
         "--nl-data",
         type=str,
         default="pcqa",
-        choices=["pcqa", "eval_v2"],
-        help="NL evaluation data source: 'pcqa' (PcQA.json 405 samples) or 'eval_v2' (eval_v2.jsonl 241 samples, no attribute questions)",
+        choices=["pcqa", "eval_v3"],
+        help="NL evaluation data source: 'pcqa' (PcQA.json 405 samples) or 'eval_v3' (eval_v3.jsonl 241 samples, no attribute questions)",
     )
     args = p.parse_args()
+
+    # LLMモデル/API base の設定（環境変数経由でパイプラインに伝播）
+    if args.model:
+        os.environ["LLM_MODEL"] = args.model
+    if args.api_base:
+        os.environ["LLM_API_BASE"] = args.api_base
+    # 環境変数を反映して config を再読込
+    import core.config as _cfg
+    _cfg.BASEMODEL = os.getenv("LLM_MODEL", "gpt-4.1-mini")
+    _cfg.LLM_API_BASE = os.getenv("LLM_API_BASE", "")
+    if args.model or args.api_base:
+        print(f"LLM:       {_cfg.BASEMODEL}")
+        if _cfg.LLM_API_BASE:
+            print(f"API Base:  {_cfg.LLM_API_BASE}")
 
     # KGに応じた設定を取得
     kg_type = args.kg
@@ -1158,8 +1322,38 @@ Examples:
         if pipeline_id == "extended_type_kopl":
             pipeline_kwargs["reranker_type"] = args.reranker
             pipeline_kwargs["reranker_input_k"] = args.reranker_input_k
+            pipeline_kwargs["use_llm_cypher"] = args.use_llm_cypher
             if args.reranker != "none":
                 print(f"  (reranker={args.reranker}, input_k={args.reranker_input_k})")
+            if args.use_llm_cypher:
+                print("  (use_llm_cypher=True)")
+            if args.n_kopl_candidates > 1:
+                pipeline_kwargs["n_kopl_candidates"] = args.n_kopl_candidates
+                print(f"  (n_kopl_candidates={args.n_kopl_candidates})")
+            if args.schema_distill:
+                pipeline_kwargs["schema_distill"] = True
+                print("  (schema_distill=True)")
+            if args.max_correction_rounds > 0:
+                pipeline_kwargs["max_correction_rounds"] = args.max_correction_rounds
+            if args.cypher_informed_rerank:
+                pipeline_kwargs["cypher_informed_rerank"] = True
+                print("  (cypher_informed_rerank=True)")
+                print(f"  (max_correction_rounds={args.max_correction_rounds})")
+            # Retrieval-based few-shot
+            few_shot_pool = args.few_shot_pool
+            if few_shot_pool == "auto":
+                _POOL_MAP = {
+                    "primekgqa": "pipeline/extended_type_kopl/few_shot_pools/primekgqa_pool.json",
+                    "metaqa": "pipeline/extended_type_kopl/few_shot_pools/metaqa_pool.json",
+                    "pcqa": "pipeline/extended_type_kopl/few_shot_pools/pcqa_pool.json",
+                }
+                few_shot_pool = _POOL_MAP.get(pipeline_kg_type)
+                if not few_shot_pool:
+                    print(f"  Warning: no auto pool for kg_type={pipeline_kg_type}")
+            if few_shot_pool:
+                pipeline_kwargs["few_shot_pool_path"] = few_shot_pool
+                pipeline_kwargs["few_shot_k"] = args.few_shot_k
+                print(f"  (few_shot_pool={few_shot_pool}, k={args.few_shot_k})")
 
         results = run_pipeline_evaluation(
             pipeline_id,

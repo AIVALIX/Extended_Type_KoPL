@@ -1,0 +1,278 @@
+{
+  "examples": [
+    {
+      "question": "What diseases is Metformin indicated for?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "disease", "relation": "indication", "anchor_name": "Metformin"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Metformin",
+      "entity_type": "drug",
+      "target_type": "disease",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What phenotypes are present in diseases treated by Aspirin?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "disease", "relation": "indication", "anchor_name": "Aspirin"},
+        {"src_type": "disease", "tgt_type": "effect/phenotype", "relation": "phenotype present"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Aspirin",
+      "entity_type": "drug",
+      "target_type": "effect/phenotype",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What genes are targeted by both Aspirin and Ibuprofen?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Aspirin"},
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Ibuprofen"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "Aspirin",
+      "entity_type": "drug",
+      "target_type": "gene/protein",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "For INTERSECTION queries: each operation has its own anchor_name, final_operation=\"intersection\""
+    },
+    {
+      "question": "What are the side effects of Lisinopril?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "effect/phenotype", "relation": "side effect", "anchor_name": "Lisinopril"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Lisinopril",
+      "entity_type": "drug",
+      "target_type": "effect/phenotype",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "Which proteins are targeted by Tamoxifen?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Tamoxifen"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Tamoxifen",
+      "entity_type": "drug",
+      "target_type": "gene/protein",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What enzymes metabolize Warfarin?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "enzyme", "anchor_name": "Warfarin"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Warfarin",
+      "entity_type": "drug",
+      "target_type": "gene/protein",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What symptoms characterize Diabetes mellitus?",
+      "operations": [
+        {"src_type": "disease", "tgt_type": "effect/phenotype", "relation": "phenotype present", "anchor_name": "Diabetes mellitus"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Diabetes mellitus",
+      "entity_type": "disease",
+      "target_type": "effect/phenotype",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What proteins interact with genes targeted by Doxorubicin?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Doxorubicin"},
+        {"src_type": "gene/protein", "tgt_type": "gene/protein", "relation": "ppi"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Doxorubicin",
+      "entity_type": "drug",
+      "target_type": "gene/protein",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What drugs treat diseases for which Methotrexate is contraindicated?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "disease", "relation": "contraindication", "anchor_name": "Methotrexate"},
+        {"src_type": "disease", "tgt_type": "drug", "relation": "indication"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Methotrexate",
+      "entity_type": "drug",
+      "target_type": "drug",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What diseases are linked to Asbestos exposure?",
+      "operations": [
+        {"src_type": "exposure", "tgt_type": "disease", "relation": "linked to", "anchor_name": "Asbestos"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Asbestos",
+      "entity_type": "exposure",
+      "target_type": "disease",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What side effects are shared by Metformin and Glipizide?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "effect/phenotype", "relation": "side effect", "anchor_name": "Metformin"},
+        {"src_type": "drug", "tgt_type": "effect/phenotype", "relation": "side effect", "anchor_name": "Glipizide"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "Metformin",
+      "entity_type": "drug",
+      "target_type": "effect/phenotype",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "For INTERSECTION queries: each operation has its own anchor_name, final_operation=\"intersection\""
+    },
+    {
+      "question": "What diseases are associated with both BRCA1 and TP53?",
+      "operations": [
+        {"src_type": "gene/protein", "tgt_type": "disease", "relation": "associated disease", "anchor_name": "BRCA1"},
+        {"src_type": "gene/protein", "tgt_type": "disease", "relation": "associated disease", "anchor_name": "TP53"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "BRCA1",
+      "entity_type": "gene/protein",
+      "target_type": "disease",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "INTERSECTION: same relation from different anchors of the same type"
+    },
+    {
+      "question": "What proteins are targeted by both Imatinib and Dasatinib?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Imatinib"},
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Dasatinib"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "Imatinib",
+      "entity_type": "drug",
+      "target_type": "gene/protein",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "INTERSECTION: same relation from different anchors"
+    },
+    {
+      "question": "What drugs are indicated for both Hypertension and Diabetes mellitus?",
+      "operations": [
+        {"src_type": "disease", "tgt_type": "drug", "relation": "indication", "anchor_name": "Hypertension"},
+        {"src_type": "disease", "tgt_type": "drug", "relation": "indication", "anchor_name": "Diabetes mellitus"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "Hypertension",
+      "entity_type": "disease",
+      "target_type": "drug",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "INTERSECTION: finding entities at the intersection of two 1-hop queries from different anchors"
+    },
+    {
+      "question": "What proteins are both targeted by Methotrexate and carry Doxorubicin?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Methotrexate"},
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "carrier", "anchor_name": "Doxorubicin"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "Methotrexate",
+      "entity_type": "drug",
+      "target_type": "gene/protein",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "INTERSECTION with DIFFERENT relations: each anchor uses a different relation type"
+    },
+    {
+      "question": "What genes are targeted by Aspirin, Ibuprofen, and Acetaminophen?",
+      "operations": [
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Aspirin"},
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Ibuprofen"},
+        {"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Acetaminophen"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "Aspirin",
+      "entity_type": "drug",
+      "target_type": "gene/protein",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "THREE_INTERSECTION: 3 anchors, same relation, final_operation=\"intersection\""
+    },
+    {
+      "question": "What diseases are associated with BRCA1, TP53, and EGFR?",
+      "operations": [
+        {"src_type": "gene/protein", "tgt_type": "disease", "relation": "associated disease", "anchor_name": "BRCA1"},
+        {"src_type": "gene/protein", "tgt_type": "disease", "relation": "associated disease", "anchor_name": "TP53"},
+        {"src_type": "gene/protein", "tgt_type": "disease", "relation": "associated disease", "anchor_name": "EGFR"}
+      ],
+      "final_operation": "intersection",
+      "entity_name": "BRCA1",
+      "entity_type": "gene/protein",
+      "target_type": "disease",
+      "hop_count": 1,
+      "operation_type": "intersection",
+      "notes": "THREE_INTERSECTION: 3 gene anchors, same relation, final_operation=\"intersection\""
+    },
+    {
+      "question": "What drugs treat Asthma?",
+      "operations": [
+        {"src_type": "disease", "tgt_type": "drug", "relation": "indication", "anchor_name": "Asthma"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Asthma",
+      "entity_type": "disease",
+      "target_type": "drug",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What diseases are associated with EGFR?",
+      "operations": [
+        {"src_type": "gene/protein", "tgt_type": "disease", "relation": "associated disease", "anchor_name": "EGFR"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "EGFR",
+      "entity_type": "gene/protein",
+      "target_type": "disease",
+      "hop_count": 1,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    },
+    {
+      "question": "What drugs treat diseases linked to Lead exposure?",
+      "operations": [
+        {"src_type": "exposure", "tgt_type": "disease", "relation": "linked to", "anchor_name": "Lead"},
+        {"src_type": "disease", "tgt_type": "drug", "relation": "indication"}
+      ],
+      "final_operation": "relate",
+      "entity_name": "Lead",
+      "entity_type": "exposure",
+      "target_type": "drug",
+      "hop_count": 2,
+      "operation_type": "relate",
+      "notes": "Build path from anchor to answer: each operation's tgt_type should match next operation's src_type"
+    }
+  ]
+}
