@@ -205,12 +205,31 @@ operations: [
 ]
 final_operation: "relate"
 
-3. Intersection: "What genes are targeted by both Aspirin and Ibuprofen?"
+3. 2-hop: "What proteins interact with genes targeted by Metformin?"
+operations: [
+  {{"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Metformin"}},
+  {{"src_type": "gene/protein", "tgt_type": "gene/protein", "relation": "ppi"}}
+]
+final_operation: "relate"
+
+4. 2-hop: "What are the side effects of drugs indicated for Diabetes?"
+operations: [
+  {{"src_type": "disease", "tgt_type": "drug", "relation": "indication", "anchor_name": "Diabetes"}},
+  {{"src_type": "drug", "tgt_type": "effect/phenotype", "relation": "side_effect"}}
+]
+final_operation: "relate"
+
+5. Intersection: "What genes are targeted by both Aspirin and Ibuprofen?"
 operations: [
   {{"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Aspirin"}},
   {{"src_type": "drug", "tgt_type": "gene/protein", "relation": "target", "anchor_name": "Ibuprofen"}}
 ]
-final_operation: "intersection\""""
+final_operation: "intersection"
+
+IMPORTANT:
+- ONLY use relations from the Available Relations list
+- Do NOT skip intermediate types (e.g. drug->phenotype is NOT direct; use drug->disease->phenotype)
+- For 2-hop: trace anchor -> intermediate type -> answer type. Check that both hops exist in Available Relations."""
 
 _METAQA_EXAMPLES = """Examples for MetaQA (Movie domain):
 
@@ -254,7 +273,9 @@ final_operation: "relate"
 IMPORTANT:
 - Build path from anchor to answer: each operation's tgt_type should match next operation's src_type
 - Only the first operation has anchor_name
-- For 3-hop questions, carefully trace the full path: anchor entity -> intermediate entities -> intermediate entities -> answer entities"""
+- For 3-hop questions, carefully trace the full path: anchor entity -> intermediate entities -> intermediate entities -> answer entities
+- Person connects ONLY to Movie. There is NO Person->Person relation.
+- ONLY use relations from the Available Relations list."""
 
 _PCQA_EXAMPLES = """Examples for PcQA (Pan-cancer QA domain):
 

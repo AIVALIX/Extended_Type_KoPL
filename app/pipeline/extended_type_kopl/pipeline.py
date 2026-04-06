@@ -718,7 +718,7 @@ class ExtendedTypeKoPLPipeline:
         max_correction_rounds: int = 0,
         beam_width: int = 1,
         use_llm_cypher: bool = False,
-        schema_distill: bool = False,
+        schema_distill: bool = True,
         cypher_informed_rerank: bool = False,
     ):
         if not os.getenv("OPENAI_API_KEY"):
@@ -2655,7 +2655,9 @@ Available node types: {type_list}
 CRITICAL RULES:
 1. Each operation represents ONE HOP in the path. For N-hop queries, provide exactly N operations.
 2. Each operation specifies: src_type, tgt_type, relation, anchor_name (if applicable)
-3. For PATH queries: operations are connected (op[i].tgt_type == op[i+1].src_type)
+3. For PATH queries: operations MUST chain type-consistently:
+   op[0].tgt_type == op[1].src_type, op[1].tgt_type == op[2].src_type, etc.
+   VERIFY: Check each (src_type)-[relation]->(tgt_type) triple against Available Relations before outputting.
 4. For INTERSECTION queries: each operation has its own anchor_name, final_operation="intersection"
 5. Break down the question step by step. Each operation = one hop. Do NOT combine multiple steps into one semantic description.
 6. Build path from anchor to answer. The relation nearest to [anchor] in the question is the FIRST hop, not the last.
