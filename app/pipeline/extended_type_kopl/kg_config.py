@@ -739,6 +739,91 @@ def _build_webqsp() -> ETKKGConfig:
     )
 
 
+_KQAPRO_STEPWISE_EXAMPLES = """Examples:
+
+1. "Who directed Forrest Gump?"
+Step 1: Find(Forrest Gump, type=film)
+Step 2: Relate(director, -> human)
+Done: entity
+
+2. "Who are the cast members of films directed by Steven Spielberg?"
+Step 1: Find(Steven Spielberg, type=human)
+Step 2: Relate(director, -> film)
+Step 3: Relate(cast_member, -> human)
+Done: entity
+
+3. "What film has the genre of romance and has Ava Gardner as a cast member?"
+Step 1: Find(romance film, type=Concept)
+Step 2: Relate(genre, <- film)
+Step 3: Find(Ava Gardner, type=human)
+Step 4: Relate(cast_member, <- film)
+Step 5: And()
+Done: entity
+
+4. "How many films did Steven Spielberg direct?"
+Step 1: Find(Steven Spielberg, type=human)
+Step 2: Relate(director, -> film)
+Step 3: Count()
+Done: count
+
+5. "What is the population of Tokyo?"
+Step 1: Find(Tokyo, type=city)
+Step 2: QueryAttr(population)
+Done: attr
+
+6. "What is the relationship between Forrest Gump and English?"
+Step 1: Find(Forrest Gump, type=film)
+Step 2: Find(English, type=Concept)
+Step 3: QueryRelation()
+Done: relation
+
+7. "Was Forrest Gump released in 1994?"
+Step 1: Find(Forrest Gump, type=film)
+Step 2: Verify(publication date, 1994, =)
+Done: verify
+
+8. "Does My Neighbor Totoro or Hannah Arendt have the longer run-time?"
+Step 1: Find(My Neighbor Totoro, type=film)
+Step 2: Find(Hannah Arendt, type=film)
+Step 3: SelectBetween(duration, greater)
+Done: select
+
+9. "Which former French region has the smallest population?"
+Step 1: Find(former French region, type=Concept)
+Step 2: Relate(self, -> Concept)
+Step 3: SelectAmong(population, smallest)
+Done: select
+
+10. "When did Carleton College have 2060 students?"
+Step 1: Find(Carleton College, type=Concept)
+Step 2: QueryAttrQualifier(number of students, 2060, point in time)
+Done: attr_qualifier
+
+11. "In what region was Bury My Heart at Wounded Knee released on 2007-05-20?"
+Step 1: Find(Bury My Heart at Wounded Knee, type=film)
+Step 2: QueryAttrQualifier(publication date, 2007-05-20, place of publication)
+Done: attr_qualifier
+
+12. "When was Richard Widmark nominated for an Academy Award for Best Supporting Actor?"
+Step 1: Find(Richard Widmark, type=human)
+Step 2: Find(Academy Award for Best Supporting Actor, type=award)
+Step 3: QueryRelationQualifier(nominated for, point in time)
+Done: relation_qualifier
+
+13. "Who was the prize winner when Mrs. Miniver got the Academy Award for Best Writing?"
+Step 1: Find(Mrs. Miniver, type=film)
+Step 2: Find(Academy Award for Best Writing Adapted Screenplay, type=award)
+Step 3: QueryRelationQualifier(award received, statement is subject of)
+Done: relation_qualifier
+
+IMPORTANT:
+- Each Step has exactly one function call
+- Find specifies entity name and type
+- Relate specifies relation and direction (-> forward, <- backward) with target type
+- And() intersects the results of the two most recent Find+Relate branches
+- Terminal functions (Count, QueryAttr, Verify, Select*, Query*Qualifier) end the program
+- Done line states the answer_type"""
+
 _KQAPRO_EXAMPLES = """Examples for KQA Pro (Wikidata open-domain):
 
 --- Entity retrieval (answer_type: "entity") ---

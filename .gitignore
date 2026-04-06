@@ -19,9 +19,15 @@ data/path_encoder_jsonl
 result
 metaqa_results
 metaqa_results_100
+
 metaqa_results_1000
 .env
 *./output
 __pycache__
 docs
 .claude/
+app/pipeline/extended_type_kopl/pipeline.py.bak
+app/pipeline/extended_type_kopl/pipeline.py.current
+app/pipeline/extended_type_kopl/pipeline.py.current2
+volume_kqapro/
+volume_webqsp/

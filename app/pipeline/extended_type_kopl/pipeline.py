@@ -427,6 +427,27 @@ class AtomicKoPLProgramSchema(BaseModel):
     )
 
 
+# --- KQA-Pro Sequential Step Schema ---
+
+class StepSchema(BaseModel):
+    """1ステップの関数呼び出し"""
+    function: str = Field(description="Function name: Find, Relate, And, Count, QueryAttr, QueryRelation, Verify, SelectBetween, SelectAmong, QueryAttrQualifier, QueryRelationQualifier")
+    entity: Optional[str] = Field(default=None, description="For Find: entity name")
+    type: Optional[str] = Field(default=None, description="For Find: node type. For Relate: target type")
+    relation: Optional[str] = Field(default=None, description="For Relate/QueryRelationQualifier: relation name")
+    direction: Optional[str] = Field(default=None, description="For Relate: '->' (forward) or '<-' (backward)")
+    key: Optional[str] = Field(default=None, description="For QueryAttr/Verify/Select*: property key. For QueryAttrQualifier: attribute key")
+    value: Optional[str] = Field(default=None, description="For Verify: expected value. For QueryAttrQualifier: attribute value to match")
+    op: Optional[str] = Field(default=None, description="For Verify: comparison operator (=, !=, >, <)")
+    mode: Optional[str] = Field(default=None, description="For Select*: greater/smaller/largest/smallest")
+    qualifier_key: Optional[str] = Field(default=None, description="For Query*Qualifier: qualifier key to return")
+
+
+class SequentialKoPLSchema(BaseModel):
+    """KQA-Pro用 逐次実行型KoPLプログラム"""
+    steps: List[StepSchema] = Field(description="Ordered list of function calls to execute")
+
+
 # =============================================================================
 # Schema Graph
 # =============================================================================
@@ -2546,101 +2567,36 @@ Filterable properties (use filters array when the question mentions these):
 {chr(10).join(filter_lines)}
 """
 
-        # KQA-Pro extended answer types — function-definition style (SymKGQA-inspired)
+        # KQA-Pro extended answer types — concise function signatures (SymKGQA-inspired)
         answer_type_info = ""
         if self.kg_type == "kqapro":
             answer_type_info = """
-FUNCTION DEFINITIONS — each answer_type corresponds to a function. Set answer_type and the required fields.
+ANSWER TYPE FUNCTIONS — set answer_type and required fields.
 
-1. Entity(operations)
-   Description: Return entity names matching the graph traversal.
-   Input: operations (path or intersection hops)
-   Output: list of entity names
-   answer_type: "entity"
-   Triggers: Who / What / Which [noun] ...
-   Example: "Who directed Forrest Gump?" → answer_type="entity"
+  answer_type        | Required fields                                              | Output
+  -------------------|--------------------------------------------------------------|------------------
+  "entity"           | operations                                                   | entity names
+  "count"            | operations                                                   | integer
+  "attr"             | operations, query_key                                        | attribute value
+  "relation"         | select_entity_a, select_entity_b                             | relation name
+  "verify"           | operations, query_key, verify_value, verify_op               | "yes" / "no"
+  "select"           | query_key, select_mode, [select_entity_a, select_entity_b]   | entity name
+  "attr_qualifier"   | operations, match_attr_key, match_attr_value, qualifier_key  | qualifier value
+  "relation_qualifier"| select_entity_a, select_entity_b, query_key, qualifier_key  | qualifier value
 
-2. Count(operations)
-   Description: Count the number of entities matching the traversal.
-   Input: operations
-   Output: an integer
-   answer_type: "count"
-   Triggers: How many ...
-   Example: "How many films did X direct?" → answer_type="count"
+THINK STEP BY STEP before choosing answer_type:
+1. Identify the entities mentioned in the question
+2. Determine what the question is asking for (entity name? count? attribute value? metadata?)
+3. Check: does the question mention a KNOWN value and ask WHEN/WHERE/WHO about it? → qualifier
+4. Check: does the question ask about metadata of a RELATION between two entities? → relation_qualifier
+5. Then set answer_type and fill in the required fields
 
-3. QueryAttr(operations, query_key)
-   Description: Return an attribute value of the entity found by operations.
-   Input: operations (locate the entity), query_key (property name to read)
-   Output: attribute value (string, number, or date)
-   answer_type: "attr"
-   Triggers: What is the [property] of X? / What year ... / How long ...
-   Example: "What is the population of Tokyo?" → answer_type="attr", query_key="population"
-
-4. QueryRelation(select_entity_a, select_entity_b)
-   Description: Return the relation predicate connecting two named entities.
-   Input: select_entity_a, select_entity_b (the two entity names)
-   Output: relation name
-   answer_type: "relation"
-   Triggers: What is the relationship between X and Y?
-   Example: "What relation does Forrest Gump have with English?" → answer_type="relation", select_entity_a="Forrest Gump", select_entity_b="English"
-
-5. Verify(operations, query_key, verify_value, verify_op)
-   Description: Check whether an entity's attribute satisfies a condition.
-   Input: operations (locate entity), query_key (property), verify_value (expected value), verify_op ("=", ">", "<", ">=", "<=")
-   Output: "yes" or "no"
-   answer_type: "verify"
-   Triggers: Is / Was / Does X have Y? / Is it true that ...
-   Example: "Was Forrest Gump released in 1994?" → answer_type="verify", query_key="publication date", verify_value="1994", verify_op="="
-
-6. SelectBetween(query_key, select_mode, select_entity_a, select_entity_b)
-   Description: Compare two named entities on a property and return the one that is greater/smaller.
-   Input: query_key (property to compare), select_mode ("greater"/"smaller"), select_entity_a, select_entity_b
-   Output: entity name
-   answer_type: "select"
-   Triggers: Which of X or Y has greater/longer/more ... / Does X or Y have ...
-   Example: "Does X or Y have longer duration?" → answer_type="select", query_key="duration", select_mode="greater"
-
-7. SelectAmong(operations, query_key, select_mode)
-   Description: Among entities found by traversal, return the one with the largest/smallest property value.
-   Input: operations (find candidate set), query_key (property), select_mode ("greatest"/"smallest")
-   Output: entity name
-   answer_type: "select"
-   Triggers: Which [concept] has the largest/smallest/most/fewest ...
-   Example: "Which former French region has the smallest population?" ��� answer_type="select", query_key="population", select_mode="smallest"
-
-8. QueryAttrQualifier(operations, match_attr_key, match_attr_value, qualifier_key)
-   Description: An entity has an attribute fact (key=match_attr_key, value=match_attr_value) with qualifier metadata. Return the qualifier value.
-   Input: operations (locate entity), match_attr_key (attribute name), match_attr_value (the known value that identifies the fact), qualifier_key (metadata field to return)
-   Output: qualifier value (often a date or place)
-   answer_type: "attr_qualifier"
-   Triggers: When/Where/In what [qualifier] did X have [value] [attribute]? / At what point in time is [value] the [attribute] of X?
-   DECISION RULE: If the question asks for a DATE/PLACE/METADATA about an attribute fact (not the attribute value itself), use attr_qualifier.
-     - "What is the population of X?" → attr (asking for the value)
-     - "When did X have population 2060?" → attr_qualifier (asking for the date qualifier of that population fact)
-     - "At what point in time is 30291 the population of X?" → attr_qualifier (match_attr_key="population", match_attr_value="30291", qualifier_key="point in time")
-   Example: "When did Carleton College have 2060 students?" → answer_type="attr_qualifier", match_attr_key="number of students", match_attr_value="2060", qualifier_key="point in time"
-
-9. QueryRelationQualifier(select_entity_a, select_entity_b, query_key, qualifier_key)
-   Description: Two entities are connected by a relation (query_key). Return the qualifier metadata of that relational fact.
-   Input: select_entity_a, select_entity_b (the two entities), query_key (relation predicate), qualifier_key (metadata to return)
-   Output: qualifier value
-   answer_type: "relation_qualifier"
-   Triggers: When/Where/For what [qualifier] was X [relation] Y? / Who was the [qualifier] when X [relation] Y?
-   DECISION RULE: If the question asks about metadata (time, place, associated person) of a RELATION between two entities, use relation_qualifier.
-     - "What is the relationship between X and Y?" → relation (asking for the predicate name)
-     - "When was X nominated for Y?" → relation_qualifier (asking for the time qualifier of the "nominated for" relation)
-     - "For what work was X given Y?" → relation_qualifier (query_key="award received", qualifier_key="for work")
-   Example: "When was Richard Widmark nominated for Academy Award for Best Supporting Actor?" → answer_type="relation_qualifier", select_entity_a="Richard Widmark", select_entity_b="Academy Award for Best Supporting Actor", query_key="nominated for", qualifier_key="point in time"
-
-CLASSIFICATION GUIDE — use this decision tree:
-  Q: Does the question ask "how many"? → count
-  Q: Does it ask to compare two/more entities on a property? → select
-  Q: Does it ask yes/no about a fact? → verify
-  Q: Does it ask what relation connects X and Y? → relation
-  Q: Does the question mention a KNOWN attribute value and ask for its metadata (when/where/who)? → attr_qualifier
-  Q: Does the question mention TWO entities and ask for metadata of their relation? → relation_qualifier
-  Q: Does it ask for a property value of an entity? → attr
-  Q: Otherwise → entity
+Key distinctions:
+- "attr" asks for a property VALUE → "What is the population of X?"
+- "attr_qualifier" asks for METADATA of a property fact → "When did X have population 2060?"
+- "relation" asks for the PREDICATE name → "What is the relation between X and Y?"
+- "relation_qualifier" asks for METADATA of a relation → "When was X nominated for Y?"
+- "select" with two named entities: set select_entity_a/b. With a concept set: use operations + select_mode only.
 """
 
         return f"""Convert this question into an Atomic Type-KoPL program.
@@ -2666,6 +2622,601 @@ CRITICAL RULES:
 
 Return a JSON object with operations array, final_operation, answer_type, and optionally filters/query_key/verify_value/verify_op/select_mode/select_entity_a/select_entity_b."""
 
+    # -----------------------------------------------------------------
+    # KQA-Pro Sequential JSON KoPL generation
+    # -----------------------------------------------------------------
+
+    def _build_kopl_prompt_sequential(
+        self,
+        question: str,
+        entity_name: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> str:
+        """KQA-Pro用 Sequential JSON KoPL生成プロンプト"""
+        type_list = ", ".join(sorted(self.schema.types))
+        available_relations = self._get_available_relations()
+
+        entity_info = ""
+        if entity_name:
+            entity_info = f"Known entity: {entity_name}"
+            if entity_type:
+                entity_info += f" (type: {entity_type})"
+            if target_type:
+                entity_info += f"\nTarget type: {target_type}"
+
+        return f"""Convert this question into a sequential KoPL program (ordered list of function calls).
+
+Question: {question}
+{entity_info}
+
+Available node types: {type_list}
+
+{available_relations}
+
+FUNCTIONS (use these as the "function" field):
+  Find          — entity: name, type: node_type
+  Relate        — relation: name, direction: "->" or "<-", type: target_type
+  And           — Intersect results of the two preceding Find+Relate branches
+  Count         — Count entities (terminal)
+  QueryAttr     — key: property name (terminal)
+  QueryRelation — Get relation name between the two Find entities (terminal)
+  Verify        — key: property, value: expected, op: "="/">"/etc. (terminal)
+  SelectBetween — key: property, mode: "greater"/"smaller" (terminal, for two Find entities)
+  SelectAmong   — key: property, mode: "largest"/"smallest" (terminal, for entity set)
+  QueryAttrQualifier     — key: attr_name, value: attr_value, qualifier_key: metadata to return (terminal)
+  QueryRelationQualifier — relation: predicate, qualifier_key: metadata to return (terminal, for two Find entities)
+
+RULES:
+- Start with Find to specify anchor entity/entities
+- Use Relate for each graph traversal hop (one hop per step)
+- End with a terminal function (or just Find+Relate for entity retrieval)
+- The last function determines the answer type
+- Relate must chain types: previous output type = next source type
+
+EXAMPLES:
+
+1. "Who directed Forrest Gump?"
+{{"steps": [{{"function": "Find", "entity": "Forrest Gump", "type": "film"}}, {{"function": "Relate", "relation": "director", "direction": "->", "type": "human"}}]}}
+
+2. "Who are the cast members of films directed by Steven Spielberg?"
+{{"steps": [{{"function": "Find", "entity": "Steven Spielberg", "type": "human"}}, {{"function": "Relate", "relation": "director", "direction": "->", "type": "film"}}, {{"function": "Relate", "relation": "cast_member", "direction": "->", "type": "human"}}]}}
+
+3. "What film has the genre of romance and has Ava Gardner as a cast member?"
+{{"steps": [{{"function": "Find", "entity": "romance film", "type": "Concept"}}, {{"function": "Relate", "relation": "genre", "direction": "<-", "type": "film"}}, {{"function": "Find", "entity": "Ava Gardner", "type": "human"}}, {{"function": "Relate", "relation": "cast_member", "direction": "<-", "type": "film"}}, {{"function": "And"}}]}}
+
+4. "How many films did Steven Spielberg direct?"
+{{"steps": [{{"function": "Find", "entity": "Steven Spielberg", "type": "human"}}, {{"function": "Relate", "relation": "director", "direction": "->", "type": "film"}}, {{"function": "Count"}}]}}
+
+5. "What is the population of Tokyo?"
+{{"steps": [{{"function": "Find", "entity": "Tokyo", "type": "city"}}, {{"function": "QueryAttr", "key": "population"}}]}}
+
+6. "What is the relationship between Forrest Gump and English?"
+{{"steps": [{{"function": "Find", "entity": "Forrest Gump", "type": "film"}}, {{"function": "Find", "entity": "English", "type": "Concept"}}, {{"function": "QueryRelation"}}]}}
+
+7. "Was Forrest Gump released in 1994?"
+{{"steps": [{{"function": "Find", "entity": "Forrest Gump", "type": "film"}}, {{"function": "Verify", "key": "publication date", "value": "1994", "op": "="}}]}}
+
+8. "Does My Neighbor Totoro or Hannah Arendt have the longer run-time?"
+{{"steps": [{{"function": "Find", "entity": "My Neighbor Totoro", "type": "film"}}, {{"function": "Find", "entity": "Hannah Arendt", "type": "film"}}, {{"function": "SelectBetween", "key": "duration", "mode": "greater"}}]}}
+
+9. "Which former French region has the smallest population?"
+{{"steps": [{{"function": "Find", "entity": "former French region", "type": "Concept"}}, {{"function": "Relate", "relation": "instance of", "direction": "<-", "type": "Concept"}}, {{"function": "SelectAmong", "key": "population", "mode": "smallest"}}]}}
+
+10. "When did Carleton College have 2060 students?"
+{{"steps": [{{"function": "Find", "entity": "Carleton College", "type": "Concept"}}, {{"function": "QueryAttrQualifier", "key": "number of students", "value": "2060", "qualifier_key": "point in time"}}]}}
+
+11. "When was Richard Widmark nominated for an Academy Award for Best Supporting Actor?"
+{{"steps": [{{"function": "Find", "entity": "Richard Widmark", "type": "human"}}, {{"function": "Find", "entity": "Academy Award for Best Supporting Actor", "type": "award"}}, {{"function": "QueryRelationQualifier", "relation": "nominated for", "qualifier_key": "point in time"}}]}}
+
+12. "What character did Freddie Prinze play in Scooby-Doo?"
+{{"steps": [{{"function": "Find", "entity": "Freddie Prinze", "type": "human"}}, {{"function": "Find", "entity": "Scooby-Doo", "type": "film"}}, {{"function": "QueryRelationQualifier", "relation": "cast member", "qualifier_key": "character role"}}]}}
+
+Now solve:
+Question: {question}
+{entity_info}
+"""
+
+    def _generate_type_kopl_sequential(
+        self,
+        question: str,
+        entity_name: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> Optional[KoPLOperation]:
+        """KQA-Pro用: Sequential JSON形式でKoPLを生成しパースする"""
+        prompt = self._build_kopl_prompt_sequential(
+            question, entity_name, entity_type, target_type
+        )
+
+        try:
+            llm_with_output = self.llm.with_structured_output(SequentialKoPLSchema)
+            result = llm_with_output.invoke(prompt)
+            logger.info(f"Phase 1 (sequential): {len(result.steps)} steps")
+            return self._parse_sequential_kopl(result, entity_name, entity_type)
+        except Exception as e:
+            logger.error(f"Phase 1 (sequential) error: {e}")
+            return None
+
+    def _parse_sequential_kopl(
+        self,
+        result: "SequentialKoPLSchema",
+        entity_name: Optional[str] = None,
+        entity_type: Optional[str] = None,
+    ) -> Optional[KoPLOperation]:
+        """SequentialKoPLSchema → KoPLOperation に変換"""
+        valid_types = self.schema.types
+        type_normalizer = {t.lower(): t for t in valid_types}
+
+        def norm_type(t: Optional[str]) -> Optional[str]:
+            if not t:
+                return None
+            t = t.strip().rstrip("}],")
+            if t in valid_types:
+                return t
+            if t.lower() in type_normalizer:
+                return type_normalizer[t.lower()]
+            return t
+
+        finds = []           # [(entity_name, entity_type)]
+        branches = []        # [(anchor_name, [TypeRelation, ...])]
+        current_branch = []
+        current_anchor = None
+        current_type = None
+        has_and = False
+
+        # Extended fields
+        answer_type = "entity"
+        query_key = None
+        verify_value = None
+        verify_op = None
+        select_mode = None
+        select_entity_a = None
+        select_entity_b = None
+        qualifier_key = None
+        match_attr_key = None
+        match_attr_value = None
+
+        for step in result.steps:
+            fn = step.function
+
+            if fn == "Find":
+                if current_branch:
+                    branches.append((current_anchor, current_branch))
+                    current_branch = []
+                ent = step.entity or ""
+                etype = norm_type(step.type)
+                finds.append((ent, etype))
+                current_anchor = ent
+                current_type = etype
+
+            elif fn == "Relate":
+                rel = step.relation or ""
+                direction = step.direction or "->"
+                tgt = norm_type(step.type)
+                if direction == "->":
+                    src = current_type or "entity"
+                    current_branch.append(TypeRelation(src_type=src, tgt_type=tgt or "entity", relation_hint=rel))
+                    current_type = tgt
+                else:  # "<-"
+                    src = tgt or "entity"
+                    current_branch.append(TypeRelation(src_type=current_type or "entity", tgt_type=src, relation_hint=rel))
+                    current_type = src
+
+            elif fn == "And":
+                if current_branch:
+                    branches.append((current_anchor, current_branch))
+                    current_branch = []
+                has_and = True
+
+            elif fn == "Count":
+                answer_type = "count"
+
+            elif fn == "QueryAttr":
+                answer_type = "attr"
+                query_key = step.key
+
+            elif fn == "QueryRelation":
+                answer_type = "relation"
+                if len(finds) >= 2:
+                    select_entity_a = finds[-2][0]
+                    select_entity_b = finds[-1][0]
+
+            elif fn == "Verify":
+                answer_type = "verify"
+                query_key = step.key
+                verify_value = step.value
+                verify_op = step.op or "="
+
+            elif fn == "SelectBetween":
+                answer_type = "select"
+                query_key = step.key
+                select_mode = step.mode
+                if len(finds) >= 2:
+                    select_entity_a = finds[-2][0]
+                    select_entity_b = finds[-1][0]
+
+            elif fn == "SelectAmong":
+                answer_type = "select"
+                query_key = step.key
+                select_mode = step.mode
+
+            elif fn == "QueryAttrQualifier":
+                answer_type = "attr_qualifier"
+                match_attr_key = step.key
+                match_attr_value = step.value
+                qualifier_key = step.qualifier_key
+
+            elif fn == "QueryRelationQualifier":
+                answer_type = "relation_qualifier"
+                query_key = step.relation
+                qualifier_key = step.qualifier_key
+                if len(finds) >= 2:
+                    select_entity_a = finds[-2][0]
+                    select_entity_b = finds[-1][0]
+
+        # Save last branch
+        if current_branch:
+            branches.append((current_anchor, current_branch))
+
+        extended_kwargs = dict(
+            answer_type=answer_type,
+            query_key=query_key,
+            verify_value=verify_value,
+            verify_op=verify_op,
+            select_mode=select_mode,
+            select_entity_a=select_entity_a,
+            select_entity_b=select_entity_b,
+            qualifier_key=qualifier_key,
+            match_attr_key=match_attr_key,
+            match_attr_value=match_attr_value,
+        )
+
+        if has_and and len(branches) >= 2:
+            children = []
+            for anchor, rels in branches:
+                children.append(KoPLOperation(
+                    op_type=OperationType.RELATE,
+                    relations=rels,
+                    anchor_name=anchor,
+                ))
+            return KoPLOperation(
+                op_type=OperationType.INTERSECTION,
+                children=children,
+                anchor_name=branches[0][0] if branches else entity_name,
+                **extended_kwargs,
+            )
+        else:
+            all_relations = []
+            anchor = entity_name
+            for br_anchor, rels in branches:
+                if br_anchor:
+                    anchor = br_anchor
+                all_relations.extend(rels)
+            return KoPLOperation(
+                op_type=OperationType.RELATE,
+                relations=all_relations,
+                anchor_name=anchor or (finds[0][0] if finds else entity_name),
+                **extended_kwargs,
+            )
+
+    # -----------------------------------------------------------------
+    # KQA-Pro Step-by-Step KoPL generation (deprecated, kept for reference)
+    # -----------------------------------------------------------------
+
+    def _build_kopl_prompt_stepwise(
+        self,
+        question: str,
+        entity_name: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> str:
+        """KQA-Pro用 Step-by-Step KoPL生成プロンプト"""
+        type_list = ", ".join(sorted(self.schema.types))
+        available_relations = self._get_available_relations()
+
+        entity_info = ""
+        if entity_name:
+            entity_info = f"Known entity: {entity_name}"
+            if entity_type:
+                entity_info += f" (type: {entity_type})"
+            if target_type:
+                entity_info += f"\nTarget type: {target_type}"
+
+        from pipeline.extended_type_kopl.kg_config import _KQAPRO_STEPWISE_EXAMPLES
+        examples = _KQAPRO_STEPWISE_EXAMPLES
+
+        return f"""Generate a step-by-step Type-KoPL program to answer the question.
+
+Question: {question}
+{entity_info}
+
+Available node types: {type_list}
+
+{available_relations}
+
+FUNCTION LIST:
+  Find(entity_name, type=node_type)                        — Locate an entity
+  Relate(relation, -> tgt_type)                             — Traverse forward
+  Relate(relation, <- src_type)                             — Traverse backward
+  And()                                                     — Intersect two branches
+  Count()                                                   — Count entities
+  QueryAttr(key)                                            — Get attribute value
+  QueryRelation()                                           — Get relation name between two entities
+  Verify(key, value, op)                                    — Check attribute (yes/no)
+  SelectBetween(key, mode)                                  — Compare two entities
+  SelectAmong(key, mode)                                    — Pick best from set
+  QueryAttrQualifier(attr_key, attr_value, qualifier_key)   — Get metadata of an attribute fact
+  QueryRelationQualifier(relation, qualifier_key)           — Get metadata of a relation
+
+RULES:
+- Each Step has exactly ONE function call
+- Relate must chain types: previous step's output type = Relate's source type
+- And() merges the two most recent Find+Relate branches
+- Terminal functions (Count, QueryAttr, Verify, Select*, Query*Qualifier) must be the last step
+- End with "Done: <answer_type>" where answer_type is one of: entity, count, attr, relation, verify, select, attr_qualifier, relation_qualifier
+
+{examples}
+
+Now solve:
+Question: {question}
+{entity_info}
+Output:
+"""
+
+    def _generate_type_kopl_stepwise(
+        self,
+        question: str,
+        entity_name: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> Optional[KoPLOperation]:
+        """KQA-Pro用: Step-by-Step形式でKoPLを生成しパースする"""
+        prompt = self._build_kopl_prompt_stepwise(
+            question, entity_name, entity_type, target_type
+        )
+
+        try:
+            response = self.llm.invoke(prompt, stop=["Step 20:"])
+            text = response.content if hasattr(response, "content") else str(response)
+            logger.info(f"Phase 1 (stepwise): raw output:\n{text}")
+            return self._parse_stepwise_kopl(text, entity_name, entity_type)
+        except Exception as e:
+            logger.error(f"Phase 1 (stepwise) error: {e}")
+            return None
+
+    def _parse_stepwise_kopl(
+        self,
+        text: str,
+        entity_name: Optional[str] = None,
+        entity_type: Optional[str] = None,
+    ) -> Optional[KoPLOperation]:
+        """Step-by-Stepテキストを KoPLOperation に変換する"""
+        import re
+
+        valid_types = self.schema.types
+        type_normalizer = {t.lower(): t for t in valid_types}
+
+        def normalize_type(t: str) -> Optional[str]:
+            t = t.strip().rstrip("}],")
+            if t in valid_types:
+                return t
+            if t.lower() in type_normalizer:
+                return type_normalizer[t.lower()]
+            return t  # fallback: return as-is
+
+        # Parse steps
+        steps = []
+        for line in text.strip().split("\n"):
+            line = line.strip()
+            # Match "Step N: Func(args)" or just "Func(args)"
+            m = re.match(r"(?:Step\s+\d+:\s*)?(\w+)\((.*)\)\s*$", line, re.DOTALL)
+            if m:
+                func_name = m.group(1)
+                args_str = m.group(2).strip()
+                # Parse args (respect commas inside quotes)
+                args = []
+                if args_str:
+                    current = []
+                    depth = 0
+                    in_quote = False
+                    for ch in args_str:
+                        if ch == '"' or ch == "'":
+                            in_quote = not in_quote
+                        elif ch == '(' :
+                            depth += 1
+                        elif ch == ')':
+                            depth -= 1
+                        elif ch == ',' and depth == 0 and not in_quote:
+                            args.append("".join(current).strip())
+                            current = []
+                            continue
+                        current.append(ch)
+                    if current:
+                        args.append("".join(current).strip())
+                steps.append((func_name, args))
+                continue
+            # Match "Done: answer_type"
+            m_done = re.match(r"Done:\s*(\w+)", line)
+            if m_done:
+                steps.append(("Done", [m_done.group(1)]))
+
+        if not steps:
+            return None
+
+        # Process steps into KoPLOperation
+        # Track Find entities and Relate chains for branch stack
+        finds = []           # [(entity_name, entity_type, index)]
+        branches = []        # [list of TypeRelation] per branch
+        current_branch = []  # TypeRelation list being built
+        current_anchor = None
+        current_type = None  # last type in current branch
+        has_and = False
+
+        # Extended fields
+        answer_type = "entity"
+        query_key = None
+        verify_value = None
+        verify_op = None
+        select_mode = None
+        select_entity_a = None
+        select_entity_b = None
+        qualifier_key = None
+        match_attr_key = None
+        match_attr_value = None
+
+        for func_name, args in steps:
+            if func_name == "Find":
+                # Save current branch if non-empty
+                if current_branch:
+                    branches.append((current_anchor, current_branch))
+                    current_branch = []
+                # Parse Find(entity_name, type=node_type)
+                ent_name = args[0] if args else ""
+                ent_type = None
+                for a in args[1:]:
+                    if a.startswith("type="):
+                        ent_type = normalize_type(a[5:])
+                finds.append((ent_name, ent_type))
+                current_anchor = ent_name
+                current_type = ent_type
+
+            elif func_name == "Relate":
+                # Parse Relate(relation, -> tgt_type) or Relate(relation, <- src_type)
+                rel = args[0] if args else ""
+                direction_and_type = args[1] if len(args) > 1 else "-> entity"
+                direction_and_type = direction_and_type.strip()
+                if direction_and_type.startswith("->"):
+                    tgt = normalize_type(direction_and_type[2:].strip())
+                    src = current_type or "entity"
+                    current_branch.append(TypeRelation(
+                        src_type=src, tgt_type=tgt, relation_hint=rel
+                    ))
+                    current_type = tgt
+                elif direction_and_type.startswith("<-"):
+                    src = normalize_type(direction_and_type[2:].strip())
+                    tgt = current_type or "entity"
+                    current_branch.append(TypeRelation(
+                        src_type=tgt, tgt_type=src, relation_hint=rel
+                    ))
+                    current_type = src
+                else:
+                    # Fallback: treat as forward
+                    tgt = normalize_type(direction_and_type)
+                    src = current_type or "entity"
+                    current_branch.append(TypeRelation(
+                        src_type=src, tgt_type=tgt, relation_hint=rel
+                    ))
+                    current_type = tgt
+
+            elif func_name == "And":
+                # Save current branch
+                if current_branch:
+                    branches.append((current_anchor, current_branch))
+                    current_branch = []
+                has_and = True
+
+            elif func_name == "Count":
+                answer_type = "count"
+
+            elif func_name == "QueryAttr":
+                answer_type = "attr"
+                query_key = args[0] if args else None
+
+            elif func_name == "QueryRelation":
+                answer_type = "relation"
+                # select_entity_a/b from the two most recent Finds
+                if len(finds) >= 2:
+                    select_entity_a = finds[-2][0]
+                    select_entity_b = finds[-1][0]
+                elif len(finds) == 1:
+                    select_entity_a = finds[0][0]
+
+            elif func_name == "Verify":
+                answer_type = "verify"
+                query_key = args[0] if args else None
+                verify_value = args[1] if len(args) > 1 else None
+                verify_op = args[2] if len(args) > 2 else "="
+
+            elif func_name == "SelectBetween":
+                answer_type = "select"
+                query_key = args[0] if args else None
+                select_mode = args[1] if len(args) > 1 else None
+                if len(finds) >= 2:
+                    select_entity_a = finds[-2][0]
+                    select_entity_b = finds[-1][0]
+
+            elif func_name == "SelectAmong":
+                answer_type = "select"
+                query_key = args[0] if args else None
+                select_mode = args[1] if len(args) > 1 else None
+
+            elif func_name == "QueryAttrQualifier":
+                answer_type = "attr_qualifier"
+                match_attr_key = args[0] if args else None
+                match_attr_value = args[1] if len(args) > 1 else None
+                qualifier_key = args[2] if len(args) > 2 else None
+
+            elif func_name == "QueryRelationQualifier":
+                answer_type = "relation_qualifier"
+                query_key = args[0] if args else None
+                qualifier_key = args[1] if len(args) > 1 else None
+                if len(finds) >= 2:
+                    select_entity_a = finds[-2][0]
+                    select_entity_b = finds[-1][0]
+
+            elif func_name == "Done":
+                if args:
+                    answer_type = args[0]
+
+        # Save last branch
+        if current_branch:
+            branches.append((current_anchor, current_branch))
+
+        # Build KoPLOperation
+        extended_kwargs = dict(
+            answer_type=answer_type,
+            query_key=query_key,
+            verify_value=verify_value,
+            verify_op=verify_op,
+            select_mode=select_mode,
+            select_entity_a=select_entity_a,
+            select_entity_b=select_entity_b,
+            qualifier_key=qualifier_key,
+            match_attr_key=match_attr_key,
+            match_attr_value=match_attr_value,
+        )
+
+        if has_and and len(branches) >= 2:
+            # Intersection
+            children = []
+            for anchor, rels in branches:
+                children.append(KoPLOperation(
+                    op_type=OperationType.RELATE,
+                    relations=rels,
+                    anchor_name=anchor,
+                ))
+            return KoPLOperation(
+                op_type=OperationType.INTERSECTION,
+                children=children,
+                anchor_name=branches[0][0] if branches else entity_name,
+                **extended_kwargs,
+            )
+        else:
+            # Single path
+            all_relations = []
+            anchor = entity_name
+            for br_anchor, rels in branches:
+                if br_anchor:
+                    anchor = br_anchor
+                all_relations.extend(rels)
+            return KoPLOperation(
+                op_type=OperationType.RELATE,
+                relations=all_relations,
+                anchor_name=anchor or (finds[0][0] if finds else entity_name),
+                **extended_kwargs,
+            )
+
     def _get_prompt_examples(self) -> str:
         """プロンプト例を返す（FewShotPool優先、なければKGConfigから静的例）"""
         if self.few_shot_pool and hasattr(self, '_current_question'):
@@ -2689,7 +3240,6 @@ Return a JSON object with operations array, final_operation, answer_type, and op
         n_kopl_candidates > 1 の場合、temperature > 0 で複数候補を生成し、
         スキーマ整合スコアが最も高い候補を選択する。
         """
-
         prompt = self._build_kopl_prompt(question, entity_name, entity_type, target_type)
 
         n = self.n_kopl_candidates
