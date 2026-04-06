@@ -349,6 +349,105 @@ class KBPropertyStore:
             props.append((key, val_str, attr["value"].type))
         return props
 
+    def query_attr_qualifier(
+        self,
+        name: str,
+        attr_key: str,
+        attr_value: str,
+        qualifier_key: str,
+    ) -> Optional[str]:
+        """QueryAttrQualifier: find attribute matching key+value, return qualifier.
+
+        Args:
+            name: entity name
+            attr_key: attribute key to match (e.g. "number of students")
+            attr_value: attribute value to match (e.g. "2060")
+            qualifier_key: qualifier key to return (e.g. "point in time")
+        """
+        resolved_attr_key = self.resolve_key(attr_key)
+        target_attr_key = resolved_attr_key or attr_key
+        target_value = self.parse_value_for_key(target_attr_key, attr_value)
+        resolved_qual_key = self.resolve_key(qualifier_key)
+        target_qual_key = resolved_qual_key or qualifier_key
+
+        ids = self._get_entity_ids(name)
+        for eid in ids:
+            ent = self.entities.get(eid) or self.concepts.get(eid)
+            if not ent:
+                continue
+            for attr in ent.get("attributes", []):
+                if attr["key"] != target_attr_key:
+                    continue
+                # Check if value matches
+                av = attr["value"]
+                matched = False
+                try:
+                    if av.can_compare(target_value) and comp(av, target_value, "="):
+                        matched = True
+                except Exception:
+                    pass
+                if not matched and str(av).lower() == attr_value.lower():
+                    matched = True
+                if not matched:
+                    continue
+                # Found matching attribute — look for qualifier
+                quals = attr.get("qualifiers", {})
+                for qk in (target_qual_key, qualifier_key):
+                    if qk in quals and quals[qk]:
+                        return str(quals[qk][0])
+        return None
+
+    def query_relation_qualifier(
+        self,
+        entity_a: str,
+        entity_b: str,
+        relation_pred: str,
+        qualifier_key: str,
+    ) -> Optional[str]:
+        """QueryRelationQualifier: find relation between two entities, return qualifier.
+
+        Searches both directions (A→B and B→A).
+        """
+        resolved_pred = self.resolve_key(relation_pred)
+        target_pred = resolved_pred or relation_pred
+        resolved_qual_key = self.resolve_key(qualifier_key)
+        target_qual_key = resolved_qual_key or qualifier_key
+
+        b_ids = set(self._get_entity_ids(entity_b))
+        a_ids = self._get_entity_ids(entity_a)
+
+        # Search A's relations pointing to B
+        for eid in a_ids:
+            ent = self.entities.get(eid) or self.concepts.get(eid)
+            if not ent:
+                continue
+            for rel in ent.get("relations", []):
+                if rel.get("predicate") not in (target_pred, relation_pred):
+                    continue
+                if rel.get("object") not in b_ids:
+                    continue
+                quals = rel.get("qualifiers", {})
+                for qk in (target_qual_key, qualifier_key):
+                    if qk in quals and quals[qk]:
+                        return str(quals[qk][0])
+
+        # Search B's relations pointing to A
+        a_id_set = set(a_ids)
+        for eid in b_ids:
+            ent = self.entities.get(eid) or self.concepts.get(eid)
+            if not ent:
+                continue
+            for rel in ent.get("relations", []):
+                if rel.get("predicate") not in (target_pred, relation_pred):
+                    continue
+                if rel.get("object") not in a_id_set:
+                    continue
+                quals = rel.get("qualifiers", {})
+                for qk in (target_qual_key, qualifier_key):
+                    if qk in quals and quals[qk]:
+                        return str(quals[qk][0])
+        return None
+
     def format_properties_for_prompt(self, name: str, max_props: int = 30) -> str:
         """Format entity properties for LLM prompt injection."""
         props = self.get_available_properties(name)

@@ -68,13 +68,16 @@ class KoPLOperation:
     anchor_name: Optional[str] = None  # アンカーエンティティ名
     filters: Optional[List[PropertyFilterSchema]] = None  # Property filters for answer entities
     # KQA-Pro extended answer fields
-    answer_type: str = "entity"  # entity, count, attr, relation, verify, select
+    answer_type: str = "entity"  # entity, count, attr, relation, verify, select, attr_qualifier, relation_qualifier
     query_key: Optional[str] = None  # attribute/property to query
     verify_value: Optional[str] = None  # value to check for verify
     verify_op: Optional[str] = None  # operator for verify (=, !=, >, <)
     select_mode: Optional[str] = None  # greater, less, smallest, largest, etc.
     select_entity_a: Optional[str] = None  # for SelectBetween
     select_entity_b: Optional[str] = None  # for SelectBetween
+    qualifier_key: Optional[str] = None  # qualifier key to return (for attr_qualifier/relation_qualifier)
+    match_attr_key: Optional[str] = None  # attr_qualifier: attribute key to match
+    match_attr_value: Optional[str] = None  # attr_qualifier: attribute value to match
 
 
 # リレーション名を自然言語に変換するマッピング
@@ -381,12 +384,14 @@ class AtomicKoPLProgramSchema(BaseModel):
             "'attr' (return an attribute value), "
             "'relation' (return the relation name between two entities), "
             "'verify' (return yes/no), "
-            "'select' (compare two entities on an attribute)"
+            "'select' (compare two entities on an attribute), "
+            "'attr_qualifier' (return metadata/qualifier of an attribute entry), "
+            "'relation_qualifier' (return metadata/qualifier of a relation between two entities)"
         ),
     )
     query_key: Optional[str] = Field(
         default=None,
-        description="For attr/verify/select: the attribute or property to query (e.g. 'population', 'duration')",
+        description="For attr/verify/select: the property to query. For relation_qualifier: the relation predicate.",
     )
     verify_value: Optional[str] = Field(
         default=None,
@@ -402,11 +407,23 @@ class AtomicKoPLProgramSchema(BaseModel):
     )
     select_entity_a: Optional[str] = Field(
         default=None,
-        description="For select (between two): name of entity A",
+        description="For select/relation_qualifier: name of entity A",
     )
     select_entity_b: Optional[str] = Field(
         default=None,
-        description="For select (between two): name of entity B",
+        description="For select/relation_qualifier: name of entity B",
+    )
+    qualifier_key: Optional[str] = Field(
+        default=None,
+        description="For attr_qualifier/relation_qualifier: the qualifier key to return (e.g. 'point in time', 'place of publication')",
+    )
+    match_attr_key: Optional[str] = Field(
+        default=None,
+        description="For attr_qualifier: the attribute key to look in (e.g. 'publication date', 'number of students')",
+    )
+    match_attr_value: Optional[str] = Field(
+        default=None,
+        description="For attr_qualifier: the attribute value to match (e.g. '2007-05-20', '2060')",
     )
 
 
@@ -1799,9 +1816,25 @@ Step 1:"""
                     processing_log=log,
                 )
 
-            # Phase 1.5: Disabled (bak版にはなし)
-            # kopl_program = self._verify_and_correct_type_path(kopl_program)
-            log.append("Phase 1.5: Skipped (bak parity)")
+            # Phase 1.5: KoPL Consistency Check (KQA-Pro only)
+            if self.kg_type == "kqapro" and kopl_program:
+                issues = self._check_kopl_consistency(kopl_program, question)
+                if issues:
+                    log.append(f"Phase 1.5: KoPL issues found: {issues}")
+                    corrected = self._regenerate_kopl_with_feedback(
+                        question, entity_name, entity_type, target_type,
+                        kopl_program, issues,
+                    )
+                    if corrected:
+                        kopl_program = corrected
+                        relation_hints = self._extract_relation_hints(kopl_program)
+                        if kopl_program.filters:
+                            self._active_filters = kopl_program.filters
+                        log.append(f"Phase 1.5: Regenerated KoPL (answer_type={kopl_program.answer_type})")
+                    else:
+                        log.append("Phase 1.5: Regeneration failed, keeping original")
+                else:
+                    log.append("Phase 1.5: KoPL consistency OK")
 
             # Phase 2: ハイブリッド探索
             log.append("Phase 2: Hybrid Schema Search")
@@ -2150,10 +2183,10 @@ Step 1:"""
                         log.append(f"Phase 5.5: KoPL filter would eliminate all {len(answer_entities)} entities, skipping")
 
             # Phase 5.8: Dynamic property injection (KQA-Pro)
-            # For attr/verify/select, resolve query_key using actual KB properties
+            # For attr/verify/select/qualifier types, resolve keys using actual KB properties
             answer_type = kopl_program.answer_type if kopl_program else "entity"
             if (
-                answer_type in ("attr", "verify", "select")
+                answer_type in ("attr", "verify", "select", "attr_qualifier", "relation_qualifier")
                 and kopl_program
                 and self.kb_store
             ):
@@ -2513,21 +2546,101 @@ Filterable properties (use filters array when the question mentions these):
 {chr(10).join(filter_lines)}
 """
 
-        # KQA-Pro extended answer types
+        # KQA-Pro extended answer types — function-definition style (SymKGQA-inspired)
         answer_type_info = ""
         if self.kg_type == "kqapro":
             answer_type_info = """
-ANSWER TYPES — set answer_type based on what the question asks for:
-- "entity": Who/What/Which → return entity names (default)
-- "count": How many → return a number
-- "attr": What is the [property] of X → return an attribute value. Set query_key to the property name.
-- "relation": What is the relationship between X and Y → return a relation name. Set select_entity_a and select_entity_b.
-- "verify": Is/Was/Does X have Y → return yes/no. Set query_key, verify_value, verify_op.
-- "select": Which of X or Y has greater/less Z → compare entities. Set query_key, select_mode, select_entity_a, select_entity_b.
-  For "which [concept] has the largest/smallest Z": set query_key and select_mode only (entities come from graph traversal).
+FUNCTION DEFINITIONS — each answer_type corresponds to a function. Set answer_type and the required fields.
 
-For attr/verify/select: operations locate the entity, query_key names the property to read.
-For relation: operations are optional, select_entity_a and select_entity_b name the two entities.
+1. Entity(operations)
+   Description: Return entity names matching the graph traversal.
+   Input: operations (path or intersection hops)
+   Output: list of entity names
+   answer_type: "entity"
+   Triggers: Who / What / Which [noun] ...
+   Example: "Who directed Forrest Gump?" → answer_type="entity"
+
+2. Count(operations)
+   Description: Count the number of entities matching the traversal.
+   Input: operations
+   Output: an integer
+   answer_type: "count"
+   Triggers: How many ...
+   Example: "How many films did X direct?" → answer_type="count"
+
+3. QueryAttr(operations, query_key)
+   Description: Return an attribute value of the entity found by operations.
+   Input: operations (locate the entity), query_key (property name to read)
+   Output: attribute value (string, number, or date)
+   answer_type: "attr"
+   Triggers: What is the [property] of X? / What year ... / How long ...
+   Example: "What is the population of Tokyo?" → answer_type="attr", query_key="population"
+
+4. QueryRelation(select_entity_a, select_entity_b)
+   Description: Return the relation predicate connecting two named entities.
+   Input: select_entity_a, select_entity_b (the two entity names)
+   Output: relation name
+   answer_type: "relation"
+   Triggers: What is the relationship between X and Y?
+   Example: "What relation does Forrest Gump have with English?" → answer_type="relation", select_entity_a="Forrest Gump", select_entity_b="English"
+
+5. Verify(operations, query_key, verify_value, verify_op)
+   Description: Check whether an entity's attribute satisfies a condition.
+   Input: operations (locate entity), query_key (property), verify_value (expected value), verify_op ("=", ">", "<", ">=", "<=")
+   Output: "yes" or "no"
+   answer_type: "verify"
+   Triggers: Is / Was / Does X have Y? / Is it true that ...
+   Example: "Was Forrest Gump released in 1994?" → answer_type="verify", query_key="publication date", verify_value="1994", verify_op="="
+
+6. SelectBetween(query_key, select_mode, select_entity_a, select_entity_b)
+   Description: Compare two named entities on a property and return the one that is greater/smaller.
+   Input: query_key (property to compare), select_mode ("greater"/"smaller"), select_entity_a, select_entity_b
+   Output: entity name
+   answer_type: "select"
+   Triggers: Which of X or Y has greater/longer/more ... / Does X or Y have ...
+   Example: "Does X or Y have longer duration?" → answer_type="select", query_key="duration", select_mode="greater"
+
+7. SelectAmong(operations, query_key, select_mode)
+   Description: Among entities found by traversal, return the one with the largest/smallest property value.
+   Input: operations (find candidate set), query_key (property), select_mode ("greatest"/"smallest")
+   Output: entity name
+   answer_type: "select"
+   Triggers: Which [concept] has the largest/smallest/most/fewest ...
+   Example: "Which former French region has the smallest population?" ��� answer_type="select", query_key="population", select_mode="smallest"
+
+8. QueryAttrQualifier(operations, match_attr_key, match_attr_value, qualifier_key)
+   Description: An entity has an attribute fact (key=match_attr_key, value=match_attr_value) with qualifier metadata. Return the qualifier value.
+   Input: operations (locate entity), match_attr_key (attribute name), match_attr_value (the known value that identifies the fact), qualifier_key (metadata field to return)
+   Output: qualifier value (often a date or place)
+   answer_type: "attr_qualifier"
+   Triggers: When/Where/In what [qualifier] did X have [value] [attribute]? / At what point in time is [value] the [attribute] of X?
+   DECISION RULE: If the question asks for a DATE/PLACE/METADATA about an attribute fact (not the attribute value itself), use attr_qualifier.
+     - "What is the population of X?" → attr (asking for the value)
+     - "When did X have population 2060?" → attr_qualifier (asking for the date qualifier of that population fact)
+     - "At what point in time is 30291 the population of X?" → attr_qualifier (match_attr_key="population", match_attr_value="30291", qualifier_key="point in time")
+   Example: "When did Carleton College have 2060 students?" → answer_type="attr_qualifier", match_attr_key="number of students", match_attr_value="2060", qualifier_key="point in time"
+
+9. QueryRelationQualifier(select_entity_a, select_entity_b, query_key, qualifier_key)
+   Description: Two entities are connected by a relation (query_key). Return the qualifier metadata of that relational fact.
+   Input: select_entity_a, select_entity_b (the two entities), query_key (relation predicate), qualifier_key (metadata to return)
+   Output: qualifier value
+   answer_type: "relation_qualifier"
+   Triggers: When/Where/For what [qualifier] was X [relation] Y? / Who was the [qualifier] when X [relation] Y?
+   DECISION RULE: If the question asks about metadata (time, place, associated person) of a RELATION between two entities, use relation_qualifier.
+     - "What is the relationship between X and Y?" → relation (asking for the predicate name)
+     - "When was X nominated for Y?" → relation_qualifier (asking for the time qualifier of the "nominated for" relation)
+     - "For what work was X given Y?" → relation_qualifier (query_key="award received", qualifier_key="for work")
+   Example: "When was Richard Widmark nominated for Academy Award for Best Supporting Actor?" → answer_type="relation_qualifier", select_entity_a="Richard Widmark", select_entity_b="Academy Award for Best Supporting Actor", query_key="nominated for", qualifier_key="point in time"
+
+CLASSIFICATION GUIDE — use this decision tree:
+  Q: Does the question ask "how many"? → count
+  Q: Does it ask to compare two/more entities on a property? → select
+  Q: Does it ask yes/no about a fact? → verify
+  Q: Does it ask what relation connects X and Y? → relation
+  Q: Does the question mention a KNOWN attribute value and ask for its metadata (when/where/who)? → attr_qualifier
+  Q: Does the question mention TWO entities and ask for metadata of their relation? → relation_qualifier
+  Q: Does it ask for a property value of an entity? → attr
+  Q: Otherwise → entity
 """
 
         return f"""Convert this question into an Atomic Type-KoPL program.
@@ -2612,6 +2725,9 @@ Return a JSON object with operations array, final_operation, answer_type, and op
                 _select_mode = getattr(result, 'select_mode', None)
                 _select_entity_a = getattr(result, 'select_entity_a', None)
                 _select_entity_b = getattr(result, 'select_entity_b', None)
+                _qualifier_key = getattr(result, 'qualifier_key', None)
+                _match_attr_key = getattr(result, 'match_attr_key', None)
+                _match_attr_value = getattr(result, 'match_attr_value', None)
 
                 _extended_kwargs = dict(
                     answer_type=_answer_type,
@@ -2621,6 +2737,9 @@ Return a JSON object with operations array, final_operation, answer_type, and op
                     select_mode=_select_mode,
                     select_entity_a=_select_entity_a,
                     select_entity_b=_select_entity_b,
+                    qualifier_key=_qualifier_key,
+                    match_attr_key=_match_attr_key,
+                    match_attr_value=_match_attr_value,
                 )
 
                 if is_intersection and len(anchors_in_ops) >= 2:
@@ -2776,6 +2895,193 @@ Return a JSON object with operations array, final_operation, answer_type, and op
                     diag += f" [{tgt} reached from: {', '.join(sorted(tgt_neighbors)[:5])}]"
                 parts.append(diag)
         return "\n".join(parts) if parts else "No type pairs to diagnose"
+
+    def _check_kopl_consistency(self, kopl: KoPLOperation, question: str) -> str:
+        """Phase 1.5: LLM-based consistency check on generated KoPL.
+
+        Returns empty string if OK, or a description of issues found.
+        """
+        # 1. Structural checks (required fields)
+        at = kopl.answer_type
+        if at == "relation_qualifier":
+            missing = []
+            if not kopl.select_entity_a or not kopl.select_entity_b:
+                missing.append("select_entity_a/b")
+            if not kopl.query_key:
+                missing.append("query_key")
+            if not kopl.qualifier_key:
+                missing.append("qualifier_key")
+            if missing:
+                return f"relation_qualifier missing required fields: {', '.join(missing)}"
+
+        if at == "attr_qualifier":
+            missing = []
+            if not kopl.match_attr_key:
+                missing.append("match_attr_key")
+            if not kopl.match_attr_value:
+                missing.append("match_attr_value")
+            if not kopl.qualifier_key:
+                missing.append("qualifier_key")
+            if missing:
+                return f"attr_qualifier missing required fields: {', '.join(missing)}"
+
+        # 2. LLM verification of answer_type
+        serialized = self._serialize_kopl_for_prompt(kopl)
+        ext_fields = f"answer_type: \"{at}\""
+        if kopl.query_key:
+            ext_fields += f"\nquery_key: \"{kopl.query_key}\""
+        if kopl.qualifier_key:
+            ext_fields += f"\nqualifier_key: \"{kopl.qualifier_key}\""
+        if kopl.select_entity_a:
+            ext_fields += f"\nselect_entity_a: \"{kopl.select_entity_a}\""
+        if kopl.select_entity_b:
+            ext_fields += f"\nselect_entity_b: \"{kopl.select_entity_b}\""
+
+        prompt = f"""Check if this KoPL program's answer_type is correct for the question.
+
+Question: {question}
+
+Program:
+{serialized}
+{ext_fields}
+
+Answer types:
+- entity: return entity names
+- count: return a number
+- attr: return an attribute value of the entity itself
+- relation: return the relation name between two entities
+- verify: return yes/no
+- select: compare entities on an attribute
+- attr_qualifier: return metadata/qualifier of a specific attribute entry (e.g. "When did X have population Y?" → point in time qualifier of the population attribute)
+- relation_qualifier: return metadata/qualifier of a relation between two entities (e.g. "When was X nominated for Y?" → point in time qualifier of the 'nominated for' relation)
+
+Is the answer_type correct? Reply ONLY with either:
+- "OK" if correct
+- "WRONG: <correct_type>. <brief reason>"
+"""
+        try:
+            response = self.llm.invoke(prompt)
+            text = response.content.strip()
+            if text.upper().startswith("OK"):
+                return ""
+            if text.upper().startswith("WRONG"):
+                return text
+            return ""
+        except Exception as e:
+            logger.warning("Phase 1.5 LLM check failed: %s", e)
+            return ""
+
+    def _regenerate_kopl_with_feedback(
+        self,
+        question: str,
+        entity_name: Optional[str],
+        entity_type: Optional[str],
+        target_type: Optional[str],
+        failed_kopl: KoPLOperation,
+        issues: str,
+    ) -> Optional[KoPLOperation]:
+        """Phase 1.5: Regenerate KoPL with consistency feedback.
+
+        Builds the same base prompt but appends diagnostic feedback,
+        then parses the result using the same logic as _generate_type_kopl.
+        """
+        serialized = self._serialize_kopl_for_prompt(failed_kopl)
+        extended_fields = []
+        if failed_kopl.answer_type:
+            extended_fields.append(f"answer_type: \"{failed_kopl.answer_type}\"")
+        if failed_kopl.query_key:
+            extended_fields.append(f"query_key: \"{failed_kopl.query_key}\"")
+        if failed_kopl.qualifier_key:
+            extended_fields.append(f"qualifier_key: \"{failed_kopl.qualifier_key}\"")
+        if failed_kopl.select_entity_a:
+            extended_fields.append(f"select_entity_a: \"{failed_kopl.select_entity_a}\"")
+        if failed_kopl.select_entity_b:
+            extended_fields.append(f"select_entity_b: \"{failed_kopl.select_entity_b}\"")
+        ext_str = "\n".join(extended_fields)
+
+        base_prompt = self._build_kopl_prompt(question, entity_name, entity_type, target_type)
+        feedback_prompt = f"""{base_prompt}
+
+CORRECTION — your previous attempt had issues:
+
+Previous program:
+{serialized}
+{ext_str}
+
+Issues: {issues}
+
+Fix the answer_type and fill ALL required fields. Do NOT repeat the same mistake."""
+
+        try:
+            llm_with_output = self.llm.with_structured_output(AtomicKoPLProgramSchema)
+            result = llm_with_output.invoke(feedback_prompt)
+            if not result or not result.operations:
+                return None
+
+            # Reuse the same parsing logic
+            valid_types = self.schema.types
+            type_normalizer = {t.lower(): t for t in valid_types}
+
+            def normalize_type(t):
+                if not t:
+                    return None
+                t_clean = t.strip().rstrip("}],")
+                if t_clean in valid_types:
+                    return t_clean
+                t_lower = t_clean.lower()
+                if t_lower in type_normalizer:
+                    return type_normalizer[t_lower]
+                return None
+
+            _answer_type = getattr(result, 'answer_type', 'entity') or 'entity'
+            _query_key = getattr(result, 'query_key', None)
+            _verify_value = getattr(result, 'verify_value', None)
+            _verify_op = getattr(result, 'verify_op', None)
+            _select_mode = getattr(result, 'select_mode', None)
+            _select_entity_a = getattr(result, 'select_entity_a', None)
+            _select_entity_b = getattr(result, 'select_entity_b', None)
+            _qualifier_key = getattr(result, 'qualifier_key', None)
+            _match_attr_key = getattr(result, 'match_attr_key', None)
+            _match_attr_value = getattr(result, 'match_attr_value', None)
+
+            ext_kwargs = dict(
+                answer_type=_answer_type,
+                query_key=_query_key,
+                verify_value=_verify_value,
+                verify_op=_verify_op,
+                select_mode=_select_mode,
+                select_entity_a=_select_entity_a,
+                select_entity_b=_select_entity_b,
+                qualifier_key=_qualifier_key,
+                match_attr_key=_match_attr_key,
+                match_attr_value=_match_attr_value,
+            )
+
+            # Build relations from first operation
+            relations = []
+            anchor = None
+            for op in result.operations:
+                src = normalize_type(op.src_type)
+                tgt = normalize_type(op.tgt_type)
+                if not src and not tgt:
+                    continue
+                relations.append(TypeRelation(
+                    src_type=src or "Concept",
+                    tgt_type=tgt or "Concept",
+                    relation_hint=op.relation,
+                ))
+                if op.anchor_name and not anchor:
+                    anchor = op.anchor_name
+
+            return KoPLOperation(
+                op_type=OperationType.RELATE,
+                relations=relations,
+                anchor_name=anchor or entity_name,
+                **ext_kwargs,
+            )
+        except Exception as e:
+            logger.warning("Phase 1.5 regeneration failed: %s", e)
+            return None
 
     def _serialize_kopl_for_prompt(self, kopl: KoPLOperation) -> str:
         """Format a KoPLOperation as readable text for inclusion in a correction prompt."""
@@ -3916,9 +4222,40 @@ Generate ONLY the Cypher query, nothing else:"""
         For attr/verify/select questions, the LLM's initial query_key may not match
         the exact KB key. This method retrieves the entity's real properties and
         asks the LLM to pick the correct one.
+
+        For qualifier types, also resolves qualifier_key and match_attr_key.
         """
         if not self.kb_store:
             return None
+
+        # --- Qualifier types: resolve qualifier-specific keys ---
+        if kopl.answer_type == "attr_qualifier":
+            if kopl.match_attr_key:
+                resolved = self.kb_store.resolve_key(kopl.match_attr_key)
+                if resolved:
+                    kopl.match_attr_key = resolved
+                    log.append(f"Phase 5.8: match_attr_key resolved: '{kopl.match_attr_key}' -> '{resolved}'")
+            if kopl.qualifier_key:
+                resolved = self.kb_store.resolve_key(kopl.qualifier_key)
+                if resolved:
+                    kopl.qualifier_key = resolved
+                    log.append(f"Phase 5.8: qualifier_key resolved: '{kopl.qualifier_key}' -> '{resolved}'")
+            return kopl.query_key  # no change to query_key for attr_qualifier
+
+        if kopl.answer_type == "relation_qualifier":
+            if kopl.query_key:
+                resolved = self.kb_store.resolve_key(kopl.query_key)
+                if resolved:
+                    log.append(f"Phase 5.8: relation pred resolved: '{kopl.query_key}' -> '{resolved}'")
+                    kopl.query_key = resolved
+            if kopl.qualifier_key:
+                resolved = self.kb_store.resolve_key(kopl.qualifier_key)
+                if resolved:
+                    kopl.qualifier_key = resolved
+                    log.append(f"Phase 5.8: qualifier_key resolved: '{kopl.qualifier_key}' -> '{resolved}'")
+            return kopl.query_key
+
+        # --- Standard types: attr/verify/select ---
 
         # Determine which entity to inspect
         if kopl.answer_type == "select" and kopl.select_entity_a:
@@ -4102,6 +4439,40 @@ Generate ONLY the Cypher query, nothing else:"""
                     return best_ent
 
             log.append("  Select: no result")
+            return ""
+
+        if atype == "attr_qualifier":
+            target = answer_entities[0] if answer_entities else entity_name
+            if not target or not store:
+                log.append("  AttrQualifier: missing entity or KB store")
+                return ""
+            attr_key = kopl.match_attr_key
+            attr_val = kopl.match_attr_value
+            qual_key = kopl.qualifier_key
+            if not attr_key or not attr_val or not qual_key:
+                log.append(f"  AttrQualifier: missing fields (attr_key={attr_key}, attr_val={attr_val}, qual_key={qual_key})")
+                return ""
+            result = store.query_attr_qualifier(target, attr_key, attr_val, qual_key)
+            if result is not None:
+                log.append(f"  AttrQualifier({attr_key}={attr_val}, {qual_key}) on '{target}': {result}")
+                return result
+            log.append(f"  AttrQualifier: no qualifier found on '{target}'")
+            return ""
+
+        if atype == "relation_qualifier":
+            ent_a = kopl.select_entity_a or entity_name
+            ent_b = kopl.select_entity_b
+            pred = kopl.query_key
+            qual_key = kopl.qualifier_key
+            if not ent_a or not ent_b or not pred or not qual_key:
+                log.append(f"  RelQualifier: missing fields (a={ent_a}, b={ent_b}, pred={pred}, qual={qual_key})")
+                return ""
+            if store:
+                result = store.query_relation_qualifier(ent_a, ent_b, pred, qual_key)
+                if result is not None:
+                    log.append(f"  RelQualifier({pred}, {qual_key}) on '{ent_a}'-'{ent_b}': {result}")
+                    return result
+            log.append(f"  RelQualifier: no qualifier found")
             return ""
 
         return ""

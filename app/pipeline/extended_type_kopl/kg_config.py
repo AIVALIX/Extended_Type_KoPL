@@ -817,12 +817,52 @@ final_operation: "relate"
 answer_type: "entity"
 filters: [{{"node_type": "human", "property_name": "date_of_birth", "operator": "=", "value": "1954-03-11"}}]
 
+--- Attribute qualifier (answer_type: "attr_qualifier") ---
+
+12. "When did Carleton College have 2060 students?"
+operations: [{{"src_type": "Concept", "tgt_type": "Concept", "relation": "self", "anchor_name": "Carleton College"}}]
+final_operation: "relate"
+answer_type: "attr_qualifier"
+match_attr_key: "number of students"
+match_attr_value: "2060"
+qualifier_key: "point in time"
+
+13. "In what region was Bury My Heart at Wounded Knee released on 2007-05-20?"
+operations: [{{"src_type": "film", "tgt_type": "film", "relation": "self", "anchor_name": "Bury My Heart at Wounded Knee"}}]
+final_operation: "relate"
+answer_type: "attr_qualifier"
+match_attr_key: "publication date"
+match_attr_value: "2007-05-20"
+qualifier_key: "place of publication"
+
+--- Relation qualifier (answer_type: "relation_qualifier") ---
+
+14. "When was Richard Widmark nominated for an Academy Award for Best Supporting Actor?"
+operations: []
+final_operation: "relate"
+answer_type: "relation_qualifier"
+select_entity_a: "Richard Widmark"
+select_entity_b: "Academy Award for Best Supporting Actor"
+query_key: "nominated for"
+qualifier_key: "point in time"
+
+15. "Who was the prize winner when Mrs. Miniver got the Academy Award for Best Writing?"
+operations: []
+final_operation: "relate"
+answer_type: "relation_qualifier"
+select_entity_a: "Mrs. Miniver"
+select_entity_b: "Academy Award for Best Writing, Adapted Screenplay"
+query_key: "award received"
+qualifier_key: "statement is subject of"
+
 IMPORTANT:
 - Build path from anchor to answer entity
 - Use natural relation names with underscores (e.g., cast_member, place_of_birth)
 - Only the first operation (or each branch in intersection) has anchor_name
 - For attr/verify/select questions, operations may be empty or just locate the entity
-- query_key must match the KG property name exactly"""
+- query_key must match the KG property name exactly
+- For attr_qualifier: match_attr_key and match_attr_value identify WHICH attribute entry, qualifier_key is the metadata to return
+- For relation_qualifier: query_key is the relation predicate, qualifier_key is the metadata to return"""
 
 _KQAPRO_ENTITY_EXTRACTION_EXAMPLES = """Examples for KQA Pro (open-domain):
 - "Who directed Forrest Gump?"

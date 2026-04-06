@@ -21,8 +21,8 @@ ANSWER_TYPE_MAP = {
     "Count": "count",
     "QueryAttr": "attr",
     "QueryRelation": "relation",
-    "QueryAttrQualifier": "attr",
-    "QueryRelationQualifier": "relation",
+    "QueryAttrQualifier": "attr_qualifier",
+    "QueryRelationQualifier": "relation_qualifier",
     "QueryAttrUnderCondition": "attr",
     "VerifyStr": "verify",
     "VerifyNum": "verify",
@@ -71,9 +71,26 @@ def extract_query_info(program: list) -> dict:
     if func in ('QueryAttr', 'QueryAttrUnderCondition'):
         info['query_key'] = inputs[0] if inputs else None
     elif func == 'QueryAttrQualifier':
-        # QueryAttrQualifier(key, value, qualifier_key)
+        # QueryAttrQualifier(attr_key, attr_value, qualifier_key)
         if len(inputs) >= 3:
-            info['query_key'] = inputs[2]  # qualifier key is the answer
+            info['match_attr_key'] = inputs[0]
+            info['match_attr_value'] = inputs[1]
+            info['qualifier_key'] = inputs[2]
+    elif func == 'QueryRelationQualifier':
+        # QueryRelationQualifier(relation_predicate, qualifier_key)
+        if len(inputs) >= 2:
+            info['query_key'] = inputs[0]       # relation predicate
+            info['qualifier_key'] = inputs[1]   # qualifier to return
+        # Extract entity names from Find dependencies
+        deps = last.get('dependencies', [])
+        for d in deps:
+            if d < len(program):
+                dep_step = program[d]
+                if dep_step['function'] == 'Find' and dep_step.get('inputs'):
+                    if 'select_entity_a' not in info:
+                        info['select_entity_a'] = dep_step['inputs'][0]
+                    else:
+                        info['select_entity_b'] = dep_step['inputs'][0]
     elif func in ('VerifyStr', 'VerifyNum', 'VerifyYear', 'VerifyDate'):
         info['verify_value'] = inputs[0] if inputs else None
         info['verify_op'] = inputs[1] if len(inputs) > 1 else '='
