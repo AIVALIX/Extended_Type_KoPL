@@ -229,10 +229,21 @@ DATASETS_KQAPRO = {
     },
 }
 
+# データセット設定（PrimeKGQA Original — 本家ベンチマーク）
+DATASETS_PRIMEKGQA_ORIGINAL = {
+    "test_entity": {
+        "path": "data/primekgqa_original/qa/test_entity.jsonl",
+        "entity_key": "anchor_name",
+        "gold_relations_keys": ["relation"],
+        "gold_answers_key": "answer_nodes",
+    },
+}
+
 # KGごとのデータセット設定
 DATASETS_BY_KG = {
     "primekgqa": DATASETS_PRIMEKGQA,
     "primekgqa_raw": DATASETS_PRIMEKGQA_RAW,
+    "primekgqa_original": DATASETS_PRIMEKGQA_ORIGINAL,
     "metaqa": DATASETS_METAQA,
     "pcqa": DATASETS_PCQA,
     "webqsp": DATASETS_WEBQSP,
@@ -320,6 +331,12 @@ PIPELINE_CONFIGS_KQAPRO = {
 PIPELINE_CONFIGS_BY_KG = {
     "primekgqa": PIPELINE_CONFIGS_PRIMEKGQA,
     "primekgqa_raw": PIPELINE_CONFIGS_PRIMEKGQA,  # 同じパイプライン設定を共有
+    "primekgqa_original": {
+        "extended_type_kopl": {
+            "name": "Extended Type-KoPL",
+            "datasets": ["test_entity"],
+        },
+    },
     "metaqa": PIPELINE_CONFIGS_METAQA,
     "pcqa": PIPELINE_CONFIGS_PCQA,
     "webqsp": PIPELINE_CONFIGS_WEBQSP,
@@ -1079,7 +1096,7 @@ Examples:
         "--kg",
         type=str,
         default="primekgqa",
-        choices=["primekgqa", "primekgqa_raw", "metaqa", "pcqa", "webqsp", "kqapro"],
+        choices=["primekgqa", "primekgqa_raw", "primekgqa_original", "metaqa", "pcqa", "webqsp", "kqapro"],
         help="Knowledge Graph to use (default: primekgqa). primekgqa_raw uses no-paraphrase dataset.",
     )
     p.add_argument("--pipeline", type=str, nargs="+", help="Pipeline(s) to evaluate")
@@ -1321,8 +1338,8 @@ Examples:
         print(f"{'='*60}")
 
         # パイプライン固有のパラメータ
-        # primekgqa_raw は KG自体は primekgqa（データセットのみ異なる）
-        pipeline_kg_type = "primekgqa" if kg_type == "primekgqa_raw" else kg_type
+        # primekgqa_raw / primekgqa_original は KG自体は primekgqa（データセットのみ異なる）
+        pipeline_kg_type = "primekgqa" if kg_type in ("primekgqa_raw", "primekgqa_original") else kg_type
         pipeline_kwargs = {"kg_type": pipeline_kg_type}
 
         # スキーマなしモード（Extended Type-KoPL, SAFE のみ対応）
