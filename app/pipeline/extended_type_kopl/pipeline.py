@@ -750,7 +750,8 @@ class ExtendedTypeKoPLPipeline:
         from langchain_openai import OpenAIEmbeddings
 
         # LLM: ローカルLLM (LiteLLM proxy) or OpenAI
-        api_base = LLM_API_BASE or None
+        # runtime に env を読む（モジュール import 時の LLM_API_BASE キャプチャ問題を回避）
+        api_base = os.getenv("LLM_API_BASE", "") or LLM_API_BASE or None
         llm_kwargs = {"model_provider": "openai", "temperature": 0, "max_tokens": 8192}
         if api_base:
             llm_kwargs["base_url"] = api_base
@@ -1857,6 +1858,14 @@ Step 1:"""
                 else:
                     log.append("Phase 1.5: KoPL consistency OK")
 
+            # Phase 1.6: Re-orient KoPL relations so the type chain starts at the anchor
+            if kopl_program and entity_name:
+                reoriented = self._reorient_relations_from_anchor(kopl_program, entity_name)
+                if reoriented:
+                    log.append(
+                        f"Phase 1.6: Reoriented {reoriented} relation(s) to start from anchor"
+                    )
+
             # Phase 2: ハイブリッド探索
             log.append("Phase 2: Hybrid Schema Search")
             candidate_paths = self._hybrid_schema_search(kopl_program)
@@ -1879,6 +1888,8 @@ Step 1:"""
                     log.append("  Correction failed (LLM returned None)")
                     break
                 log.append(f"  Corrected KoPL: {len(corrected.relations)} relations")
+                if entity_name:
+                    self._reorient_relations_from_anchor(corrected, entity_name)
                 corrected = self._verify_and_correct_type_path(corrected)
                 candidate_paths = self._hybrid_schema_search(corrected)
                 log.append(f"  Re-search found {len(candidate_paths)} candidate paths")
@@ -2139,6 +2150,8 @@ Step 1:"""
                     if not corrected:
                         log.append("  Correction failed")
                         break
+                    if entity_name:
+                        self._reorient_relations_from_anchor(corrected, entity_name)
                     corrected = self._verify_and_correct_type_path(corrected)
                     new_paths = self._hybrid_schema_search(corrected)
                     if not new_paths:
@@ -4080,6 +4093,70 @@ Return a JSON object with operations array, final_operation, and optionally filt
         # 各ステップの候補を組み合わせてパスを構築
         return self._build_paths_from_steps(expanded_type_path, step_relations)
 
+    def _reorient_relations_from_anchor(
+        self, kopl_program: KoPLOperation, anchor_name: Optional[str]
+    ) -> int:
+        """Phase 1.5: Re-orient KoPL TypeRelations so the type chain starts from the anchor.
+
+        LLMs tend to emit src_type/tgt_type in canonical schema order
+        (e.g. ``src=Movie, tgt=Person`` for ``STARRED_ACTORS``), regardless of
+        which end of the edge the anchor actually lives on. When the anchor's
+        type doesn't match ``relations[0].src_type``, Phase 2 builds a type
+        chain where the anchor sits in the middle (e.g. ``[Movie, Person,
+        Movie]`` for a Person anchor), and Phase 4 Cypher then binds the
+        anchor to the wrong node and returns nothing.
+
+        This method looks up the anchor's Neo4j labels and, for each operation,
+        walks the relation list swapping ``src_type`` / ``tgt_type`` in place so
+        that (a) ``relations[0].src_type`` matches an anchor label and (b) the
+        chain is threaded: ``relations[i].tgt_type == relations[i+1].src_type``.
+
+        For intersection queries (op.children), each child carries its own
+        ``anchor_name``; the caller's ``anchor_name`` is used as a fallback.
+
+        Returns the number of relations that were swapped (for logging).
+        """
+        operations = kopl_program.children if kopl_program.children else [kopl_program]
+        swaps = 0
+
+        for op in operations:
+            if not op.relations:
+                continue
+
+            # Each child of an intersection has its own anchor
+            op_anchor = op.anchor_name or anchor_name
+            if not op_anchor:
+                continue
+            anchor_labels = self._get_node_labels(op_anchor)
+            if not anchor_labels:
+                continue
+
+            r0 = op.relations[0]
+            if r0.src_type in anchor_labels:
+                pass  # already starts at anchor
+            elif r0.tgt_type in anchor_labels:
+                r0.src_type, r0.tgt_type = r0.tgt_type, r0.src_type
+                swaps += 1
+            else:
+                # Anchor type doesn't match either end of r0 — leave this
+                # operation alone (_verify_and_correct_type_path may still fix it).
+                continue
+            # After processing r0, the walk position is at its tgt (not src)
+            prev_type = r0.tgt_type
+
+            for rel in op.relations[1:]:
+                if rel.src_type == prev_type:
+                    pass  # already chained
+                elif rel.tgt_type == prev_type:
+                    rel.src_type, rel.tgt_type = rel.tgt_type, rel.src_type
+                    swaps += 1
+                else:
+                    # Chain is broken; bail out for this operation
+                    break
+                prev_type = rel.tgt_type
+
+        return swaps
+
     def _verify_and_correct_type_path(
         self, kopl_program: KoPLOperation
     ) -> KoPLOperation:
@@ -4517,7 +4594,12 @@ Generate ONLY the Cypher query, nothing else:"""
             return self._execute_cypher_for_path(graph, path, anchor_name)
 
     def _get_node_labels(self, name: str) -> Set[str]:
-        """Neo4jノードのラベルを取得（キャッシュ付き）"""
+        """Neo4jノードのラベルを取得（キャッシュ付き）
+
+        Returns the union of labels across ALL nodes matching the given name.
+        This handles collisions like "2012" being both a Movie title and a
+        Date value in MetaQA — we want to know the entity could be either.
+        """
         cache = getattr(self, '_node_label_cache', None)
         if cache is None:
             self._node_label_cache = {}
@@ -4531,10 +4613,12 @@ Generate ONLY the Cypher query, nothing else:"""
             graph = self.finder.graph
             result = graph.run(
                 "MATCH (n) WHERE toLower(n.name) = toLower($name) "
-                "RETURN labels(n) AS labels LIMIT 1",
+                "RETURN labels(n) AS labels LIMIT 10",
                 name=name,
             ).data()
-            labels = set(result[0]["labels"]) if result else set()
+            labels: Set[str] = set()
+            for row in result:
+                labels.update(row["labels"])
         except Exception:
             labels = set()
 
