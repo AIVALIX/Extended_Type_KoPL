@@ -3373,13 +3373,18 @@ Output:
                 return None
 
         if n > 1:
-            # 複数候補生成: temperature > 0 で N 個生成し、スキーマ整合スコアで選択
+            # 複数候補生成: temperature > 0 で N 個生成し、構造スコアで選択
             candidates: List[Tuple[KoPLOperation, float]] = []
             for i in range(n):
                 kopl = self._invoke_and_parse_kopl(
                     prompt, entity_name, temperature=0.7
                 )
                 if kopl:
+                    # 各候補を anchor 起点に正規化してからスコア計算する。
+                    # これにより chain connectivity の信号が LLM 出力の
+                    # canonical 方向バイアスに左右されない
+                    if entity_name:
+                        self._reorient_relations_from_anchor(kopl, entity_name)
                     score = self._score_schema_compatibility(kopl)
                     candidates.append((kopl, score))
 
@@ -3398,16 +3403,42 @@ Output:
         return best
 
     def _score_schema_compatibility(self, kopl: KoPLOperation) -> float:
-        """KoPLプログラムのスキーマ整合スコアを計算
+        """KoPLプログラムの構造スコアを計算 (0.0 - 1.0)。
 
-        各型ペアにスキーマ上のエッジが存在する割合を返す (0.0 - 1.0)。
+        次の 3 つのシグナルを重み付け合成する:
+
+        1. **Schema validity** (weight 0.5):
+           各 (src_type, tgt_type) ペアにスキーマ上のエッジが存在する割合
+        2. **Chain connectivity** (weight 0.3):
+           連続する relation が ``prev.tgt_type == next.src_type`` を満たす割合。
+           LLM の正準方向出力が混ざっていると chain が途切れ、Phase 2 の
+           BFS で余計な中間型が挿入されて 3-hop 迂回の原因になる
+        3. **Answer type alignment** (weight 0.2):
+           ``kopl.answer_type`` がスキーマ型であれば、最終 relation の
+           ``tgt_type`` が一致するかを加点する。ミスマッチは 0.5 倍
+
+        構造スコアの高い候補を選ぶことで、multi-candidate 生成時に
+        「正しい hop 数 / 正しい answer 型」の候補を優先的に採用できる。
         """
         operations = kopl.children if kopl.children else [kopl]
+
+        # 1. Schema validity
         total_pairs = 0
         valid_pairs = 0
+        # 2. Chain connectivity (intra-operation only; children are independent)
+        chain_total = 0
+        chain_threaded = 0
+        # 3. Answer-type alignment: each op's final hop should land at answer_type
+        answer_type = getattr(kopl, "answer_type", "entity") or "entity"
+        check_ans_type = (
+            answer_type != "entity"
+            and answer_type in self.schema.types
+        )
+        ans_aligned = True
 
         for op in operations:
-            for rel in op.relations:
+            rels = op.relations
+            for rel in rels:
                 if not rel.src_type or not rel.tgt_type:
                     continue
                 total_pairs += 1
@@ -3417,9 +3448,24 @@ Output:
                 if available:
                     valid_pairs += 1
 
+            for i in range(len(rels) - 1):
+                chain_total += 1
+                if rels[i].tgt_type and rels[i].tgt_type == rels[i + 1].src_type:
+                    chain_threaded += 1
+
+            if check_ans_type and rels:
+                final_rel = rels[-1]
+                if final_rel.tgt_type and final_rel.tgt_type != answer_type:
+                    ans_aligned = False
+
         if total_pairs == 0:
             return 0.0
-        return valid_pairs / total_pairs
+
+        schema_score = valid_pairs / total_pairs
+        chain_score = chain_threaded / chain_total if chain_total > 0 else 1.0
+        ans_score = 1.0 if ans_aligned else 0.5
+
+        return schema_score * 0.5 + chain_score * 0.3 + ans_score * 0.2
 
     # ─── Phase 1→2 Correction (Feature B) ────────────
 
