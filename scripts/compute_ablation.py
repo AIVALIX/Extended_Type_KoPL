@@ -19,7 +19,7 @@ CONFIGS = [
      "result/fix_anchor_reorient_final/gemma3_27b/metaqa",
      "extended_type_kopl_{ds}.jsonl"),
     ("D: +n_kopl=3 plain",
-     "result/ablation/gemma3_27b/metaqa_nkopl3",
+     "result/ablation/gemma3_27b/metaqa_nkopl3_2hop_plain",
      "extended_type_kopl_{ds}.jsonl"),
     ("E: -reranker",
      "result/ablation/gemma3_27b/metaqa_noreranker",
@@ -28,7 +28,7 @@ CONFIGS = [
      "result/ablation/gemma3_27b/metaqa_cir",
      "extended_type_kopl_{ds}.jsonl"),
     ("G: +n_kopl=3 +enhanced scoring",
-     "result/ablation/gemma3_27b/metaqa_nkopl3_enhanced",
+     "result/ablation/gemma3_27b/metaqa_nkopl3_2hop_enhanced",
      "extended_type_kopl_{ds}.jsonl"),
 ]
 
