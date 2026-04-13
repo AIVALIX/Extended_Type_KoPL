@@ -741,6 +741,7 @@ class ExtendedTypeKoPLPipeline:
         use_llm_cypher: bool = False,
         schema_distill: bool = True,
         cypher_informed_rerank: bool = False,
+        enhanced_scoring: bool = True,
     ):
         if not os.getenv("OPENAI_API_KEY"):
             settings = get_settings()
@@ -807,6 +808,7 @@ class ExtendedTypeKoPLPipeline:
         self.n_kopl_candidates = n_kopl_candidates
         self.max_correction_rounds = max_correction_rounds
         self.schema_distill = schema_distill
+        self.enhanced_scoring = enhanced_scoring
 
         # Retrieval-based few-shot pool (MMR selection)
         self.few_shot_k = few_shot_k
@@ -3405,7 +3407,9 @@ Output:
     def _score_schema_compatibility(self, kopl: KoPLOperation) -> float:
         """KoPLプログラムの構造スコアを計算 (0.0 - 1.0)。
 
-        次の 3 つのシグナルを重み付け合成する:
+        ``self.enhanced_scoring`` が ``False`` の場合、従来の schema-validity
+        のみを返す (plain scoring)。``True`` の場合は以下の 3 シグナルを
+        重み付け合成する:
 
         1. **Schema validity** (weight 0.5):
            各 (src_type, tgt_type) ペアにスキーマ上のエッジが存在する割合
@@ -3462,6 +3466,9 @@ Output:
             return 0.0
 
         schema_score = valid_pairs / total_pairs
+        if not getattr(self, "enhanced_scoring", True):
+            return schema_score
+
         chain_score = chain_threaded / chain_total if chain_total > 0 else 1.0
         ans_score = 1.0 if ans_aligned else 0.5
 
@@ -3764,12 +3771,22 @@ Return a JSON object with operations array, final_operation, and optionally filt
         from langchain.chat_models import init_chat_model
 
         if temperature > 0:
-            llm = init_chat_model(
-                self.llm.model_name if hasattr(self.llm, 'model_name') else self.llm.model,
-                model_provider="openai",
-                temperature=temperature,
-                max_tokens=8192,
+            # 新しい LLM インスタンスを作る際、元の LLM から model / api_base
+            # を引き継ぐ。これを怠ると LiteLLM proxy 越しのローカルモデルで
+            # "invalid model ID" エラーになる
+            model_name = (
+                self.llm.model_name if hasattr(self.llm, 'model_name') else self.llm.model
             )
+            init_kwargs = {
+                "model_provider": "openai",
+                "temperature": temperature,
+                "max_tokens": 8192,
+            }
+            api_base = os.getenv("LLM_API_BASE", "") or LLM_API_BASE or None
+            if api_base:
+                init_kwargs["base_url"] = api_base
+                init_kwargs["api_key"] = "sk-local"
+            llm = init_chat_model(model_name, **init_kwargs)
             llm_with_output = llm.with_structured_output(AtomicKoPLProgramSchema)
         else:
             llm_with_output = self.llm.with_structured_output(AtomicKoPLProgramSchema)
