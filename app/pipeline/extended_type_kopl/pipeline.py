@@ -1092,26 +1092,6 @@ Return the extracted entity information."""
                     processing_log=log,
                 )
 
-            # Phase 1.5: KoPL Consistency Check (KQA-Pro only)
-            if self.kg_type == "kqapro" and kopl_program:
-                issues = kqapro_adapter.check_kopl_consistency(self, kopl_program, question)
-                if issues:
-                    log.append(f"Phase 1.5: KoPL issues found: {issues}")
-                    corrected = kqapro_adapter.regenerate_kopl_with_feedback(
-                        self, question, entity_name, entity_type, target_type,
-                        kopl_program, issues,
-                    )
-                    if corrected:
-                        kopl_program = corrected
-                        relation_hints = self._extract_relation_hints(kopl_program)
-                        if kopl_program.filters:
-                            self._active_filters = kopl_program.filters
-                        log.append(f"Phase 1.5: Regenerated KoPL (answer_type={kopl_program.answer_type})")
-                    else:
-                        log.append("Phase 1.5: Regeneration failed, keeping original")
-                else:
-                    log.append("Phase 1.5: KoPL consistency OK")
-
             # Phase 1.6: Re-orient KoPL relations so the type chain starts at the anchor
             if kopl_program and entity_name and self.anchor_reorient:
                 reoriented = self._reorient_relations_from_anchor(kopl_program, entity_name)
