@@ -196,7 +196,7 @@ DATASETS_METAQA = {
 # データセット設定（PcQA - Pan-cancer QA）
 DATASETS_PCQA = {
     "all": {
-        "path": "data/pcqa/qa/eval_v3.jsonl",  # Cypher-verified dataset with entity/path/filters (352 samples, 100% coverage)
+        "path": "data/pcqa/qa/eval_v2.jsonl",  # Cypher-verified via build_eval_cypher.py (241 samples, all entity-set questions). eval_v3 was contaminated by build_eval_v3.py fabricating gold from pipeline output on non-entity questions.
         "entity_key": "entity",
         "gold_relations_keys": ["relation"],
         "gold_answers_key": "answers",
