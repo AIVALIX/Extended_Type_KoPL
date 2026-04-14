@@ -256,56 +256,6 @@ class EntitySet:
 
 
 @dataclass
-class SubgraphEntity:
-    """プロパティ付きエンティティ（PcQA用）"""
-
-    name: str
-    entity_type: str
-    properties: Dict[str, Any] = field(default_factory=dict)
-    relations: List[Tuple[str, str, str]] = field(
-        default_factory=list
-    )  # (rel_type, direction, target_name)
-    relation_properties: Dict[str, Any] = field(
-        default_factory=dict
-    )  # リレーションのプロパティ（fda_approved等）
-
-    def to_kgt_format(self, anchor_name: str) -> str:
-        """KGT形式のサブグラフ表現を生成
-
-        Example: (cabozantinib {fda_approved: YES, nmpa_approved: NO})-[:treatment]->(cancer)
-        Note: In this KG, approval properties are on nodes, not relations.
-        """
-        # ノードのプロパティを含める（fda_approved, nmpa_approved等）
-        node_props_str = ""
-        important_props = [
-            "fda_approved",
-            "nmpa_approved",
-            "phase",
-            "status",
-            "evidence_level",
-        ]
-        props_to_show = {
-            k: v for k, v in self.properties.items() if k in important_props
-        }
-
-        # リレーションプロパティも確認（一部のKGではリレーションに格納）
-        if self.relation_properties:
-            props_to_show.update(self.relation_properties)
-
-        if props_to_show:
-            props_list = [f"{k}: {v}" for k, v in props_to_show.items()]
-            node_props_str = " {" + ", ".join(props_list) + "}"
-
-        if self.relations:
-            rel_type, direction, _ = self.relations[0]
-            if direction == "<-":
-                return f"({self.name}{node_props_str})-[:{rel_type}]->({anchor_name})"
-            else:
-                return f"({anchor_name})-[:{rel_type}]->({self.name}{node_props_str})"
-        return f"({self.name}{node_props_str})"
-
-
-@dataclass
 class ExtendedTypeKoPLResult:
     """Extended Type-KoPL結果"""
 
@@ -315,7 +265,7 @@ class ExtendedTypeKoPLResult:
     selected_paths: List[SchemaPath]
     entity_sets: List[EntitySet]
     answer_entities: List[str]
-    natural_answer: str = ""  # 自然言語回答（PcQA評価用）
+    natural_answer: str = ""  # 自然言語回答（KQA-Pro extended answer 用）
     processing_log: List[str] = field(default_factory=list)
 
 
@@ -796,9 +746,6 @@ class ExtendedTypeKoPLPipeline:
         self.reranker_input_k = reranker_input_k
         self.reranker = create_reranker(reranker_type, model=model, kg_type=kg_type)
 
-        # PcQA: CancerCell複合名（run()で設定、per-sample）
-        self._compound_names: List[str] = []
-
         # LLM Cypher generation flag
         self.use_llm_cypher = use_llm_cypher
         self.cypher_informed_rerank = cypher_informed_rerank
@@ -977,67 +924,6 @@ Return the extracted entity information."""
             print(f"KGT entity extraction error: {e}")
             return None
 
-    def _extract_target_type(self, question: str) -> Optional[str]:
-        """Extract the target entity type from a question (lightweight).
-
-        Used when entity_name is already provided but target_type is unknown.
-        Returns a normalized schema type or None.
-        """
-        type_list = ", ".join(sorted(self.schema.types))
-
-        # PcQA-specific examples to handle tricky question patterns
-        pcqa_examples = ""
-        if self.kg_type == "pcqa":
-            pcqa_examples = """
-IMPORTANT: The target type is the type of ANSWER the question seeks, NOT the type mentioned in the question.
-- "How does EGFR gene mutation affect the efficacy of X?" -> Drug (asking about drugs, not genes)
-- "How to treat cancer carrying TP53?" -> Drug (asking about treatment drugs)
-- "Which drugs are cancers with NTRK3-p.G623R resistant to?" -> Drug (asking about drugs)
-- "What is the relationship between BRAF mutation and the therapeutic effect of X?" -> Drug (asking about drugs for a gene)
-- "What drugs inhibit FGFR3?" -> Drug
-- "What cancers can be treated by X?" -> Cancer
-- "What genes does drug X inhibit?" -> Genesymbol
-- "What genetic mutations are present in ovarian cancer?" -> SnvFull
-- "What type of cancer can be driven by X?" -> Cancer
-- "What fusion genes are in melanoma?" -> Fusion
-- "What genetic diseases are caused by X?" -> GeneticDisease
-Key patterns:
-- "affect the efficacy of", "treat", "therapeutic effect", "resistant to", "sensitive to" -> Drug
-- "what drugs", "targeted drugs", "targeted therapies" -> Drug
-- "mutations need to be tested/detected for [drug]" -> Drug (NOT SnvFull! The answer is drugs that target the gene)
-- "relationship between [gene] and [drug]" -> Drug
-- "what type of cancer", "what cancers" -> Cancer
-- "what genes", "which genes" -> Genesymbol
-- "what mutations are present in [cancer]" -> SnvFull (only when asking what mutations exist IN a cancer)
-"""
-
-        prompt = f"""What type of entity is this question asking about?
-
-Question: {question}
-
-Available entity types: {type_list}
-{pcqa_examples}
-Return ONLY the target entity type name from the list above. For example:
-- "What drugs treat X?" -> Drug
-- "What cancers are related to X?" -> Cancer
-- "What genes are associated with X?" -> Genesymbol
-
-Target type:"""
-
-        try:
-            response = self.llm.invoke(prompt)
-            raw = response.content.strip().split("\n")[0].strip()
-            # Normalize
-            type_normalizer = {t.lower(): t for t in self.schema.types}
-            # Also handle common aliases
-            raw_lower = raw.lower().strip()
-            if raw_lower in TYPE_ALIAS_MAP:
-                raw_lower = TYPE_ALIAS_MAP[raw_lower]
-            return type_normalizer.get(raw_lower)
-        except Exception as e:
-            logger.warning(f"Target type extraction failed: {e}")
-            return None
-
     def _validate_entity_in_db(self, entity_name: str) -> Optional[str]:
         """Validate entity name exists in database.
 
@@ -1103,529 +989,6 @@ Target type:"""
             print(f"Fuzzy search error: {e}")
             return None
 
-    def _try_direct_paths(
-        self, entity_name: str, entity_type: Optional[str], target_type: str
-    ) -> Set[str]:
-        """Fallback: Try all direct 1-hop paths from entity to target type
-
-        This is useful when the multi-hop path (e.g., Gene->Cancer->Drug)
-        doesn't exist but a direct path (e.g., Gene->Drug via INHIBITION_TO) does.
-        """
-        try:
-            graph = self.finder.graph
-
-            # Normalize types for Cypher
-            src_type = entity_type.capitalize() if entity_type else None
-            tgt_type = target_type.capitalize() if target_type else None
-
-            if not src_type or not tgt_type:
-                return set()
-
-            def _esc(t: str) -> str:
-                if "/" in t or "." in t or " " in t:
-                    return f"`{t}`"
-                return t
-
-            # Try all direct relationships from entity to target type
-            cypher = f"""
-            MATCH (src:{_esc(src_type)})-[r]-(tgt:{_esc(tgt_type)})
-            WHERE toLower(src.name) = toLower($name)
-            RETURN DISTINCT tgt.name AS answer, type(r) AS rel
-            LIMIT 20
-            """
-            records = graph.run(cypher, name=entity_name).data()
-
-            if records:
-                # Return all found entities
-                return {r["answer"] for r in records if r["answer"]}
-
-            return set()
-        except Exception as e:
-            print(f"Direct path search error: {e}")
-            return set()
-
-    def _cancercell_2hop_search(
-        self,
-        entity_name: str,
-        entity_type: str,
-        selected_paths: List[SchemaPath],
-    ) -> List[SubgraphEntity]:
-        """PCQA: Search through CancerCell as intermediate hub node.
-
-        For Genesymbol/Fusion: find CancerCells whose name CONTAINS the gene symbol,
-        then traverse to Drug/Cancer targets.
-        For SnvFull: find CancerCells connected via HAS_VAR, then traverse to targets.
-        """
-        try:
-            graph = self.finder.graph
-            etype_norm = entity_type.lower()
-
-            # Determine search name and CancerCell match clause
-            search_name = self._compound_search_term or entity_name
-            if etype_norm == "snvfull":
-                cc_match = "MATCH (cc:CancerCell)-[:HAS_VAR]->(snv:SnvFull) WHERE toLower(snv.name) = toLower($name)"
-            else:
-                cc_match = "MATCH (cc:CancerCell) WHERE toLower(cc.name) CONTAINS toLower($name)"
-
-            # Determine target type from selected paths or use Drug as default
-            target_labels = set()
-            for p in selected_paths:
-                if p.types:
-                    # The last type in the path is usually the target
-                    last_type = p.types[-1]
-                    if last_type.lower() not in ("cancercell", etype_norm):
-                        target_labels.add(last_type)
-                    # Also check first type (path may be reversed)
-                    first_type = p.types[0]
-                    if first_type.lower() not in ("cancercell", etype_norm):
-                        target_labels.add(first_type)
-            if not target_labels:
-                target_labels = {"Drug"}
-
-            entities = []
-            seen_names = set()
-
-            for tgt_label in target_labels:
-                cypher = f"""
-                {cc_match}
-                MATCH (cc)-[r]-(tgt:{tgt_label})
-                WHERE cc <> tgt
-                RETURN DISTINCT tgt AS entity, labels(tgt) AS labels, type(r) AS rel_type
-                LIMIT 30
-                """
-                records = graph.run(cypher, name=search_name).data()
-
-                for record in records:
-                    entity_node = record.get("entity")
-                    if not entity_node:
-                        continue
-                    props = dict(entity_node) if hasattr(entity_node, "__iter__") else {}
-                    name = props.get("name", "")
-                    if not name or name in seen_names:
-                        continue
-                    seen_names.add(name)
-                    labels = record.get("labels", [])
-                    entity_type_label = labels[0] if labels else "Unknown"
-                    filtered_props = {}
-                    for key in ["name", "fda_approved", "nmpa_approved"]:
-                        if key in props and props[key] is not None:
-                            filtered_props[key] = props[key]
-                    entities.append(
-                        SubgraphEntity(
-                            name=name,
-                            entity_type=entity_type_label,
-                            properties=filtered_props,
-                            relations=[(record.get("rel_type", ""), "via CancerCell ->", entity_name)],
-                        )
-                    )
-
-            return entities
-
-        except Exception as e:
-            print(f"CancerCell 2-hop search error: {e}")
-            return []
-
-    def _try_direct_paths_with_properties(
-        self, entity_name: str, entity_type: Optional[str], target_type: str
-    ) -> List[SubgraphEntity]:
-        """PcQA用: 直接パスでプロパティ付きエンティティを取得
-
-        Fallback for when multi-hop path retrieval fails.
-        Returns SubgraphEntity with properties (fda_approved, nmpa_approved, etc.)
-        """
-        try:
-            graph = self.finder.graph
-
-            # Normalize types to match schema (case-insensitive lookup)
-            type_normalizer = {t.lower(): t for t in self.schema.types}
-            src_type = (
-                type_normalizer.get(entity_type.lower(), entity_type.capitalize())
-                if entity_type
-                else None
-            )
-            tgt_type = (
-                type_normalizer.get(target_type.lower(), target_type.capitalize())
-                if target_type
-                else None
-            )
-
-            if not src_type or not tgt_type:
-                return []
-
-            def _esc(t: str) -> str:
-                if "/" in t or "." in t or " " in t:
-                    return f"`{t}`"
-                return t
-
-            # Try all direct relationships from entity to target type
-            # Return full node properties
-            cypher = f"""
-            MATCH (src:{_esc(src_type)})-[r]-(tgt:{_esc(tgt_type)})
-            WHERE toLower(src.name) = toLower($name)
-            RETURN DISTINCT tgt AS entity, labels(tgt) AS labels, type(r) AS rel_type
-            LIMIT 30
-            """
-            records = graph.run(cypher, name=entity_name).data()
-
-            entities = []
-            seen_names = set()
-
-            for record in records:
-                entity_node = record.get("entity")
-                if not entity_node:
-                    continue
-
-                # Extract properties from node
-                props = dict(entity_node) if hasattr(entity_node, "__iter__") else {}
-                name = props.get("name", "")
-
-                if not name or name in seen_names:
-                    continue
-                seen_names.add(name)
-
-                labels = record.get("labels", [])
-                entity_type_label = labels[0] if labels else "Unknown"
-
-                # Filter to important properties
-                filtered_props = {}
-                important_keys = ["name", "fda_approved", "nmpa_approved"]
-                for key in important_keys:
-                    if key in props and props[key] is not None:
-                        filtered_props[key] = props[key]
-
-                entities.append(
-                    SubgraphEntity(
-                        name=name,
-                        entity_type=entity_type_label,
-                        properties=filtered_props,
-                        relations=[(record.get("rel_type", ""), "->", entity_name)],
-                    )
-                )
-
-            return entities
-
-        except Exception as e:
-            print(f"Direct path with properties error: {e}")
-            return []
-
-    def _try_any_neighbor_with_properties(
-        self, entity_name: str, entity_type: str
-    ) -> List[SubgraphEntity]:
-        """PcQA fallback: search ALL 1-hop neighbors regardless of target type.
-
-        Used when target_type extraction was wrong and no results were found.
-        """
-        try:
-            graph = self.finder.graph
-            cypher = """
-            MATCH (src)-[r]-(tgt)
-            WHERE toLower(src.name) = toLower($name) AND src <> tgt
-            RETURN DISTINCT tgt AS entity, labels(tgt) AS labels, type(r) AS rel_type
-            LIMIT 30
-            """
-            records = graph.run(cypher, name=entity_name).data()
-
-            entities = []
-            seen_names = set()
-            for record in records:
-                entity_node = record.get("entity")
-                if not entity_node:
-                    continue
-                props = dict(entity_node) if hasattr(entity_node, "__iter__") else {}
-                name = props.get("name", "")
-                if not name or name in seen_names:
-                    continue
-                seen_names.add(name)
-                labels = record.get("labels", [])
-                entity_type_label = labels[0] if labels else "Unknown"
-                filtered_props = {
-                    k: v
-                    for k, v in props.items()
-                    if k in ("name", "name_en", "fda_approved", "nmpa_approved")
-                    and v is not None
-                }
-                entities.append(
-                    SubgraphEntity(
-                        name=name,
-                        entity_type=entity_type_label,
-                        properties=filtered_props,
-                        relations=[
-                            (record.get("rel_type", ""), "->", entity_name)
-                        ],
-                    )
-                )
-            return entities
-        except Exception as e:
-            print(f"Any neighbor search error: {e}")
-            return []
-
-    def _retrieve_subgraph_with_properties(
-        self,
-        anchor_name: str,
-        anchor_type: str,
-        target_type: str,
-        path: SchemaPath,
-    ) -> List[SubgraphEntity]:
-        """PcQA用: プロパティ付きサブグラフを取得（KGT方式）
-
-        Returns entities with their properties AND relation properties (fda_approved, nmpa_approved, etc.)
-        This follows the official KGT approach where relation properties are used for filtering.
-        """
-        graph = self.finder.graph
-        entities = []
-
-        # PCQA重要プロパティ（エンティティ用）- fda_approved, nmpa_approved含む
-        IMPORTANT_ENTITY_PROPS = [
-            "name",
-            "name_en",
-            "fda_approved",
-            "nmpa_approved",
-            "cancer_type",
-            "drug_class",
-            "target_gene",
-            "mutation_type",
-            "phase",
-            "status",
-            "gender",
-            "location",
-            "evidence_level",
-            "class_type",
-        ]
-
-        # リレーションの重要プロパティ（フィルタリング用）
-        IMPORTANT_REL_PROPS = [
-            "fda_approved",
-            "nmpa_approved",
-            "score",
-            "evidence_level",
-            "phase",
-            "status",
-            "class_type",
-        ]
-
-        def get_label(t: str) -> str:
-            if "/" in t or "." in t or " " in t:
-                return f"`{t}`"
-            return t
-
-        def get_rel(r: str) -> str:
-            """リレーション名をCypher用にエスケープ（スペース、ハイフン、ドット等）"""
-            if " " in r or "-" in r or "/" in r or "." in r:
-                return f"`{r}`"
-            return r
-
-        try:
-            # PcQA compound: use CONTAINS for CancerCell gene matching
-            if self._compound_search_term:
-                where_anchor = "toLower(a.name) CONTAINS toLower($search_term)"
-                params = {"search_term": self._compound_search_term}
-            else:
-                where_anchor = "toLower(a.name) = toLower($anchor_name)"
-                params = {"anchor_name": anchor_name}
-
-            # Auto-reverse path if anchor_type doesn't match path.types[0]
-            # e.g., entity is Drug but path starts with Cancer -> reverse so Drug is anchor
-            path_types = list(path.types)
-            path_rels = list(path.relations)
-            if anchor_type and path_types:
-                anchor_norm = anchor_type.lower()
-                first_norm = path_types[0].lower()
-                last_norm = path_types[-1].lower()
-                if anchor_norm != first_norm and anchor_norm == last_norm:
-                    path_types = list(reversed(path_types))
-                    path_rels = list(reversed(path_rels))
-
-            # パスに沿ってサブグラフを取得（リレーションプロパティ含む、方向を無視）
-            if len(path_types) == 2:
-                # 1-hop: 方向を無視
-                cypher = f"""
-                MATCH (a:{get_label(path_types[0])})-[r:{get_rel(path_rels[0])}]-(b:{get_label(path_types[1])})
-                WHERE {where_anchor} AND a <> b
-                RETURN b AS entity, labels(b) AS labels, type(r) AS rel_type, properties(r) AS rel_props
-                """
-            elif len(path_types) == 3:
-                # 2-hop: 方向を無視
-                cypher = f"""
-                MATCH (a:{get_label(path_types[0])})-[r1:{get_rel(path_rels[0])}]-(mid:{get_label(path_types[1])})-[r2:{get_rel(path_rels[1])}]-(b:{get_label(path_types[2])})
-                WHERE {where_anchor} AND a <> mid AND mid <> b AND a <> b
-                RETURN b AS entity, labels(b) AS labels, type(r2) AS rel_type, properties(r2) AS rel_props, mid AS intermediate
-                """
-            else:
-                return []
-
-            # Note: Property filters are applied post-retrieval in Phase 5.5
-            # to ensure fallback paths (4.5a/b/c) are also filtered.
-
-            records = graph.run(cypher, **params).data()
-
-            seen_names = set()
-            for record in records:
-                entity_node = record.get("entity")
-                if not entity_node:
-                    continue
-
-                # Node から properties を取得
-                props = dict(entity_node) if hasattr(entity_node, "__iter__") else {}
-                name = props.get("name", "")
-
-                if not name or name in seen_names:
-                    continue
-                seen_names.add(name)
-
-                # エンティティの重要プロパティのみ抽出
-                filtered_props = {}
-                for key in IMPORTANT_ENTITY_PROPS:
-                    if key in props and props[key] is not None:
-                        filtered_props[key] = props[key]
-
-                # リレーションのプロパティを抽出（KGT方式の肝）
-                rel_props = record.get("rel_props", {}) or {}
-                filtered_rel_props = {}
-                for key in IMPORTANT_REL_PROPS:
-                    if key in rel_props and rel_props[key] is not None:
-                        filtered_rel_props[key] = rel_props[key]
-
-                labels = record.get("labels", [])
-                entity_type = labels[0] if labels else "Unknown"
-                direction = path.directions[0] if path.directions else "->"
-
-                entities.append(
-                    SubgraphEntity(
-                        name=name,
-                        entity_type=entity_type,
-                        properties=filtered_props,
-                        relations=[
-                            (record.get("rel_type", ""), direction, anchor_name)
-                        ],
-                        relation_properties=filtered_rel_props,
-                    )
-                )
-
-            return entities
-
-        except Exception as e:
-            print(f"Subgraph retrieval error: {e}")
-            return []
-
-    def _generate_answer_from_subgraph_llm(
-        self,
-        question: str,
-        anchor_name: str,
-        subgraph_entities: List[SubgraphEntity],
-    ) -> str:
-        """PcQA用: LLMでサブグラフから自然言語回答を生成（KGT方式）
-
-        Official KGT approach: use LLM to generate answer from subgraph WITH properties.
-        The LLM uses relation properties (fda_approved, nmpa_approved, etc.) to filter results.
-        """
-        if not subgraph_entities:
-            return f"Output: There are no results found for this query."
-
-        # KGT形式のサブグラフ表現を生成
-        subgraph_lines = []
-        for entity in subgraph_entities[:30]:  # 最大30件
-            kgt_format = entity.to_kgt_format(anchor_name)
-            subgraph_lines.append(f"{kgt_format} {entity.name}")
-
-        subgraph_text = "\n".join(subgraph_lines)
-
-        prompt = f"""You are a reasoning robot, and you need to perform the following two steps step by step:
-1. Output a corresponding natural language sentence for each relationship chain.
-2. Answer my question using natural language from step 1.
-Note: The output format is: Output: One sentence in natural language.
-
-IMPORTANT RULES:
-- Property values YES/true/True = approved, NO/false/False = not approved
-- Filter by fda_approved/nmpa_approved when the question asks about approval status
-- If no entities match the criteria, state that none exist
-
-=== EXAMPLES ===
-
-Example 1 - Cancer association:
-Subgraph:
-(MET)-[:DRIVING_TO]->(low-grade glioma)
-(MET)-[:DRIVING_TO]->(renal clear cell carcinoma)
-Question: Which types of cancer are associated with MET?
-Step 1: MET drives low-grade glioma. MET drives renal clear cell carcinoma.
-Output: MET is associated with low-grade glioma and renal clear cell carcinoma.
-
-Example 2 - Drug treatment:
-Subgraph:
-(diethylstilbestrol)-[:TREATMENT]->(breast cancer)
-(diethylstilbestrol)-[:TREATMENT]->(prostate cancer)
-Question: What types of cancer can be treated with diethylstilbestrol?
-Step 1: Diethylstilbestrol is a treatment for breast cancer. Diethylstilbestrol is a treatment for prostate cancer.
-Output: Diethylstilbestrol can treat breast cancer and prostate cancer.
-
-Example 3 - Drug inhibition:
-Subgraph:
-(TERT)-[:INHIBITION_TO]->(doxorubicin {{fda_approved: YES}})
-Question: What drugs can treat cancers with TERT mutations?
-Step 1: TERT is inhibited by doxorubicin (FDA approved).
-Output: Cancers with TERT mutations can be inhibited by doxorubicin.
-
-Example 4 - Gene activation:
-Subgraph:
-(codeine)-[:ACTIVATION_TO]->(OPRD1)
-(codeine)-[:ACTIVATION_TO]->(OPRK1)
-(codeine)-[:ACTIVATION_TO]->(OPRM1)
-Question: Which genes can be activated by codeine?
-Step 1: Codeine activates OPRD1. Codeine activates OPRK1. Codeine activates OPRM1.
-Output: The following genes can be activated by codeine: OPRD1, OPRK1, and OPRM1.
-
-Example 5 - NMPA-approved drugs (with filtering):
-Subgraph:
-(DDR2)-[:INHIBITION_TO]->(nilotinib {{fda_approved: YES, nmpa_approved: YES}})
-(DDR2)-[:INHIBITION_TO]->(dasatinib {{fda_approved: YES, nmpa_approved: YES}})
-(DDR2)-[:INHIBITION_TO]->(sitravatinib {{fda_approved: NO, nmpa_approved: NO}})
-Question: What are the NMPA-approved drugs for cancers with DDR2 mutations?
-Step 1: DDR2 is inhibited by nilotinib (NMPA approved). DDR2 is inhibited by dasatinib (NMPA approved). DDR2 is inhibited by sitravatinib (not NMPA approved).
-Output: The NMPA-approved drugs for DDR2 are nilotinib and dasatinib.
-
-Example 6 - No matching results:
-Subgraph:
-(TNKS)-[:INHIBITION_TO]->(drug1 {{fda_approved: NO, nmpa_approved: NO}})
-Question: What are the NMPA-approved drugs for cancers with TNKS mutations?
-Step 1: TNKS is inhibited by drug1 (not NMPA approved).
-Output: There are no NMPA-approved drugs that can treat cancers with TNKS mutations.
-
-Example 7 - Genetic mutations:
-Subgraph:
-(astrocytoma)-[:HAS_VAR]->(EGFR-p.L861R)
-(astrocytoma)-[:HAS_VAR]->(EGFR-p.G719A)
-Question: What genetic mutations are present in astrocytoma?
-Step 1: Astrocytoma has the variant EGFR-p.L861R. Astrocytoma has the variant EGFR-p.G719A.
-Output: Astrocytoma can be caused by the following genetic mutations: EGFR-p.L861R and EGFR-p.G719A.
-
-=== YOUR TASK ===
-
-Subgraph:
-{subgraph_text}
-
-Question: {question}
-
-Step 1:"""
-
-        try:
-            response = self.llm.invoke(prompt)
-            answer = response.content.strip()
-
-            # Extract the "Output: ..." line from the CoT response
-            # The LLM generates "Step 1: ... \nOutput: ..."
-            if "Output:" in answer:
-                # Take everything after the last "Output:"
-                output_idx = answer.rfind("Output:")
-                answer = answer[output_idx:]
-            else:
-                answer = f"Output: {answer}"
-
-            return answer
-
-        except Exception as e:
-            print(f"LLM answer generation error: {e}")
-            # フォールバック: エンティティ名のリストを返す
-            entity_names = [e.name for e in subgraph_entities]
-            return f"Output: {', '.join(entity_names[:10])}."
 
     def run(
         self, question: str, entity_name: Optional[str] = None
@@ -1656,53 +1019,11 @@ Step 1:"""
                 log.append(f"  Entity resolved: '{entity_name}' -> '{validated}'")
                 entity_name = validated
 
-            # PcQA: Also extract target_type even when entity_name is provided
-            if self.kg_type == "pcqa":
-                target_type = self._extract_target_type(question)
-                if target_type:
-                    log.append(f"  Target type extracted: '{target_type}'")
-
         # エンティティタイプを取得
         entity_type = self._get_entity_type(entity_name) if entity_name else None
 
         # Property filters from KoPL (set during Phase 1, applied in Phase 4)
         self._active_filters: Optional[List[PropertyFilterSchema]] = None
-
-        # PcQA: CancerCell複合名マッチング
-        self._compound_names: List[str] = []
-        self._compound_search_term: Optional[str] = None
-        if (
-            self.kg_type == "pcqa"
-            and entity_type
-            and entity_type.lower() in ("genesymbol", "fusion")
-            and entity_name
-        ):
-            gene_name = entity_name  # 元の遺伝子名を保持
-            from pipeline.common.pcqa import (
-                resolve_pcqa_compound_entity,
-                CANCERCELL_KEYWORDS,
-            )
-
-            compound = resolve_pcqa_compound_entity(
-                self.llm, self.finder, question, entity_name, entity_type
-            )
-            if compound:
-                compound_name, compound_type, compound_names = compound
-                log.append(
-                    f"  PcQA CancerCell resolved: {entity_name} -> {compound_name} ({compound_type})"
-                )
-                log.append(f"  Compound names: {len(compound_names)} variants")
-                entity_name = compound_name
-                entity_type = compound_type
-                self._compound_names = compound_names
-                self._compound_search_term = gene_name
-            elif any(kw in question.lower() for kw in CANCERCELL_KEYWORDS):
-                # Compound resolution失敗でもキーワードからCancerCellと推定
-                log.append(
-                    f"  PcQA CancerCell fallback: using CONTAINS for {gene_name}"
-                )
-                entity_type = "CancerCell"
-                self._compound_search_term = gene_name
 
         # Dynamic local schema for large / unknown KGs
         original_schema = None
@@ -1916,181 +1237,61 @@ Step 1:"""
                 selected_paths = pruned_paths[:3]
 
             # Phase 4: データ取得
-            # PcQA: プロパティ付きサブグラフを取得してLLMで回答生成
-            # その他: エンティティ名のみ取得
-            if self.kg_type == "pcqa":
-                log.append("Phase 4: Subgraph Retrieval with Properties (PcQA)")
-                subgraph_entities: List[SubgraphEntity] = []
+            log.append("Phase 4: Data Retrieval")
+            entity_sets = self._retrieve_entities(kopl_program, selected_paths)
+            log.append(f"  Retrieved {len(entity_sets)} entity sets")
+            for es in entity_sets:
+                log.append(f"    Set with {len(es.entities)} entities")
 
-                # 選択されたパスでサブグラフを取得
-                if selected_paths and entity_name and entity_type:
-                    for path in selected_paths:
-                        entities = self._retrieve_subgraph_with_properties(
-                            anchor_name=entity_name,
-                            anchor_type=entity_type,
-                            target_type=target_type or path.types[-1] if path.types else "",
-                            path=path,
-                        )
-                        subgraph_entities.extend(entities)
-
-                log.append(f"  Retrieved {len(subgraph_entities)} entities with properties")
-                for e in subgraph_entities[:5]:
-                    props_str = ", ".join(
-                        f"{k}={v}" for k, v in list(e.properties.items())[:3]
-                    )
-                    log.append(f"    {e.name} ({e.entity_type}): {props_str}")
-
-                # Fallback 1: Try other candidate paths if selected path returned nothing
-                if (
-                    not subgraph_entities
-                    and candidate_paths
-                    and entity_name
-                    and entity_type
-                ):
-                    log.append("Phase 4.5a: Fallback - Try Other Candidate Paths")
-                    # Try all candidate paths that weren't selected
-                    other_paths = [p for p in candidate_paths if p not in selected_paths]
-                    for path in other_paths[:3]:  # Try up to 3 more paths
-                        entities = self._retrieve_subgraph_with_properties(
-                            anchor_name=entity_name,
-                            anchor_type=entity_type,
-                            target_type=target_type or path.types[-1] if path.types else "",
-                            path=path,
-                        )
-                        if entities:
-                            log.append(
-                                f"  Found {len(entities)} entities via path: {path.to_text()}"
-                            )
-                            subgraph_entities.extend(entities)
-                            break  # Stop once we find results
-
-                # Fallback 2: Direct path with properties (any relationship)
-                if not subgraph_entities and entity_name and target_type:
-                    log.append("Phase 4.5b: Fallback - Direct Path Search with Properties")
-                    subgraph_entities = self._try_direct_paths_with_properties(
-                        entity_name, entity_type, target_type
-                    )
-                    if subgraph_entities:
-                        log.append(
-                            f"  Found {len(subgraph_entities)} entities with properties"
-                        )
-                        for e in subgraph_entities[:3]:
-                            props_str = ", ".join(
-                                f"{k}={v}" for k, v in list(e.properties.items())[:3]
-                            )
-                            log.append(f"    {e.name}: {props_str}")
-
-                # Fallback 2b: Try ALL neighbor types when target_type was wrong
-                if not subgraph_entities and entity_name and entity_type and self.kg_type == "pcqa":
-                    log.append("Phase 4.5b2: Fallback - Any Neighbor Type Search")
-                    subgraph_entities = self._try_any_neighbor_with_properties(
-                        entity_name, entity_type
-                    )
-                    if subgraph_entities:
-                        log.append(
-                            f"  Found {len(subgraph_entities)} entities (any neighbor)"
-                        )
-                        for e in subgraph_entities[:3]:
-                            log.append(f"    {e.name} ({e.entity_type})")
-
-                # Fallback 3: PCQA CancerCell-mediated 2-hop search
-                # When entity is Genesymbol/SnvFull/Fusion, go through CancerCell hub
-                if not subgraph_entities and self.kg_type == "pcqa" and entity_name:
-                    etype_norm = (entity_type or "").lower()
-                    if etype_norm in ("genesymbol", "snvfull", "fusion", "cancercell"):
-                        log.append("Phase 4.5c: Fallback - CancerCell 2-hop Search")
-                        subgraph_entities = self._cancercell_2hop_search(
-                            entity_name, entity_type or "", selected_paths
-                        )
-                        if subgraph_entities:
-                            log.append(
-                                f"  Found {len(subgraph_entities)} entities via CancerCell hub"
-                            )
-                            for e in subgraph_entities[:3]:
-                                log.append(f"    {e.name} ({e.entity_type})")
-
-                # Phase 5: KoPL論理演算（PcQAでは単純にエンティティ名を抽出）
-                log.append("Phase 5: Entity Extraction")
-                answer_entities = [e.name for e in subgraph_entities]
-                entity_sets = (
-                    [
-                        EntitySet(
-                            entities=set(answer_entities),
-                            source_path=selected_paths[0] if selected_paths else None,
-                            anchor_name=entity_name,
-                        )
-                    ]
-                    if answer_entities
-                    else []
+            # Phase 4→1 Correction: if Cypher returned 0 entities, retry with feedback
+            p4_correction = 0
+            while (
+                not entity_sets
+                and p4_correction < self.max_correction_rounds
+                and selected_paths
+            ):
+                p4_correction += 1
+                log.append(f"Phase 4→1 Correction Round {p4_correction}")
+                # Build feedback: which paths were tried and returned nothing
+                path_descs = [p.to_text() for p in selected_paths[:3]]
+                feedback = (
+                    f"Cypher execution returned 0 results for anchor '{entity_name}' "
+                    f"with paths: {'; '.join(path_descs)}. "
+                    f"The entity may have a different name in the KG, or the relation path is wrong."
                 )
-                log.append(f"  Extracted {len(answer_entities)} entity names")
-
-                # Phase 6: LLMで自然言語回答生成（PcQA専用）
-                log.append("Phase 6: LLM-based Answer Generation (PcQA)")
-                natural_answer = self._generate_answer_from_subgraph_llm(
-                    question=question,
-                    anchor_name=entity_name or "",
-                    subgraph_entities=subgraph_entities,
+                diagnosis = self._diagnose_phase2_failure(kopl_program)
+                full_diag = f"{feedback}\nSchema info:\n{diagnosis}"
+                log.append(f"  Feedback: {feedback[:200]}")
+                corrected = self._generate_corrected_type_kopl(
+                    question, entity_name, entity_type, target_type,
+                    kopl_program, full_diag,
                 )
-                log.append(f"  Generated: {natural_answer[:100]}...")
+                if not corrected:
+                    log.append("  Correction failed")
+                    break
+                if entity_name and self.anchor_reorient:
+                    self._reorient_relations_from_anchor(corrected, entity_name)
+                corrected = self._verify_and_correct_type_path(corrected)
+                new_paths = self._hybrid_schema_search(corrected)
+                if not new_paths:
+                    log.append("  Corrected KoPL still yields 0 paths")
+                    break
+                pruned = self._vector_pruning(
+                    question, new_paths, top_k=3, relation_hints=self._extract_relation_hints(corrected)
+                )
+                entity_sets = self._retrieve_entities(corrected, pruned)
+                log.append(f"  Re-retrieval: {len(entity_sets)} entity sets")
+                if entity_sets:
+                    kopl_program = corrected
+                    selected_paths = pruned
+                    relation_hints = self._extract_relation_hints(corrected)
 
-            else:
-                # PrimeKGQA / MetaQA / WebQSP: 従来のロジック
-                log.append("Phase 4: Data Retrieval")
-                entity_sets = self._retrieve_entities(kopl_program, selected_paths)
-                log.append(f"  Retrieved {len(entity_sets)} entity sets")
-                for es in entity_sets:
-                    log.append(f"    Set with {len(es.entities)} entities")
+            # Phase 5: KoPL論理演算
+            log.append("Phase 5: KoPL Logical Operation")
+            answer_entities = self._apply_kopl_operations(kopl_program, entity_sets)
+            log.append(f"  Final answer: {len(answer_entities)} entities")
 
-                # Phase 4→1 Correction: if Cypher returned 0 entities, retry with feedback
-                p4_correction = 0
-                while (
-                    not entity_sets
-                    and p4_correction < self.max_correction_rounds
-                    and selected_paths
-                ):
-                    p4_correction += 1
-                    log.append(f"Phase 4→1 Correction Round {p4_correction}")
-                    # Build feedback: which paths were tried and returned nothing
-                    path_descs = [p.to_text() for p in selected_paths[:3]]
-                    feedback = (
-                        f"Cypher execution returned 0 results for anchor '{entity_name}' "
-                        f"with paths: {'; '.join(path_descs)}. "
-                        f"The entity may have a different name in the KG, or the relation path is wrong."
-                    )
-                    diagnosis = self._diagnose_phase2_failure(kopl_program)
-                    full_diag = f"{feedback}\nSchema info:\n{diagnosis}"
-                    log.append(f"  Feedback: {feedback[:200]}")
-                    corrected = self._generate_corrected_type_kopl(
-                        question, entity_name, entity_type, target_type,
-                        kopl_program, full_diag,
-                    )
-                    if not corrected:
-                        log.append("  Correction failed")
-                        break
-                    if entity_name and self.anchor_reorient:
-                        self._reorient_relations_from_anchor(corrected, entity_name)
-                    corrected = self._verify_and_correct_type_path(corrected)
-                    new_paths = self._hybrid_schema_search(corrected)
-                    if not new_paths:
-                        log.append("  Corrected KoPL still yields 0 paths")
-                        break
-                    pruned = self._vector_pruning(
-                        question, new_paths, top_k=3, relation_hints=self._extract_relation_hints(corrected)
-                    )
-                    entity_sets = self._retrieve_entities(corrected, pruned)
-                    log.append(f"  Re-retrieval: {len(entity_sets)} entity sets")
-                    if entity_sets:
-                        kopl_program = corrected
-                        selected_paths = pruned
-                        relation_hints = self._extract_relation_hints(corrected)
-
-                # Phase 5: KoPL論理演算
-                log.append("Phase 5: KoPL Logical Operation")
-                answer_entities = self._apply_kopl_operations(kopl_program, entity_sets)
-                log.append(f"  Final answer: {len(answer_entities)} entities")
-
-                natural_answer = ""
+            natural_answer = ""
 
             # Phase 5.5: Apply KoPL filters to answer entities (post-retrieval)
             if answer_entities and self._active_filters:
@@ -2357,11 +1558,6 @@ Step 1:"""
             lines.append(f"  ... and {count - max_relations} more relations")
 
         result = "\n".join(lines)
-
-        # Append KG-specific semantic notes
-        if self.kg_type == "pcqa":
-            result += "\nNOTE: INHIBITION_TO means a drug inhibits/targets a gene. Use this when asking about drugs for a gene's mutations."
-
         return result
 
     def _format_schema_relations_with_nl(self) -> str:
@@ -4662,12 +3858,8 @@ Generate ONLY the Cypher query, nothing else:"""
                 return f"`{r}`"
             return r
 
-        if self._compound_search_term:
-            where_anchor = "toLower(a.name) CONTAINS toLower($search_term)"
-            params = {"search_term": self._compound_search_term}
-        else:
-            where_anchor = "toLower(a.name) = toLower($anchor_name)"
-            params = {"anchor_name": anchor_name}
+        where_anchor = "toLower(a.name) = toLower($anchor_name)"
+        params = {"anchor_name": anchor_name}
 
         if len(path.types) < 2:
             return None, {}

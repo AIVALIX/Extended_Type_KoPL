@@ -39,25 +39,11 @@ class ETKKGConfig:
     available_relations_text: str  # injected into the KoPL prompt
     entity_extraction_examples: str  # injected into _extract_entity_kgt_style
 
-    # ── PcQA-style property filtering ─────────────────────────────
+    # ── property filtering (e.g. fda_approved) ────────────────────
     filterable_properties: Dict[str, Dict[str, Any]]  # node_type -> prop -> info
-
-    # ── answer format ─────────────────────────────────────────────
-    answer_mode: str  # "entity_set" | "subgraph_nl"
-    #   entity_set  -> Phase 4 returns entity names, Phase 5 does set logic
-    #   subgraph_nl -> Phase 4 retrieves subgraph with properties, Phase 6 LLM generates NL
 
     # ── entity validation ─────────────────────────────────────────
     has_name_en_field: bool  # try name_en field during entity validation
-
-    # ── compound entity resolution (PcQA CancerCell style) ────────
-    has_compound_entities: bool  # enable CancerCell compound name resolution
-    compound_entity_types: List[str] = field(default_factory=list)  # types that trigger compound resolution
-    compound_keywords: List[str] = field(default_factory=list)  # keywords in question text
-
-    # ── important property keys (for subgraph retrieval) ──────────
-    important_entity_props: List[str] = field(default_factory=list)
-    important_rel_props: List[str] = field(default_factory=list)
 
 
 # =============================================================================
@@ -514,18 +500,6 @@ _PCQA_FILTERABLE: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# PcQA important properties for subgraph retrieval
-_PCQA_IMPORTANT_ENTITY_PROPS = [
-    "name", "name_en", "fda_approved", "nmpa_approved",
-    "cancer_type", "drug_class", "target_gene", "mutation_type",
-    "phase", "status", "gender", "location", "evidence_level", "class_type",
-]
-_PCQA_IMPORTANT_REL_PROPS = [
-    "fda_approved", "nmpa_approved", "score",
-    "evidence_level", "phase", "status", "class_type",
-]
-
-
 # =============================================================================
 #  Auto-generation of relation NL forms
 # =============================================================================
@@ -612,9 +586,7 @@ def _build_primekgqa() -> ETKKGConfig:
         available_relations_text="",
         entity_extraction_examples=_PRIMEKGQA_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
-        answer_mode="entity_set",
         has_name_en_field=False,
-        has_compound_entities=False,
     )
 
 
@@ -636,9 +608,7 @@ def _build_metaqa() -> ETKKGConfig:
         available_relations_text="",
         entity_extraction_examples=_METAQA_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
-        answer_mode="entity_set",
         has_name_en_field=False,
-        has_compound_entities=False,
     )
 
 
@@ -657,16 +627,7 @@ def _build_pcqa() -> ETKKGConfig:
         available_relations_text=_PCQA_AVAILABLE_RELATIONS,
         entity_extraction_examples=_PCQA_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties=_PCQA_FILTERABLE,
-        answer_mode="subgraph_nl",
         has_name_en_field=True,
-        has_compound_entities=True,
-        compound_entity_types=["genesymbol", "fusion"],
-        compound_keywords=[
-            "cell line", "cell lines", "cancer cell",
-            "resistance", "resistant", "sensitivity", "sensitive",
-        ],
-        important_entity_props=_PCQA_IMPORTANT_ENTITY_PROPS,
-        important_rel_props=_PCQA_IMPORTANT_REL_PROPS,
     )
 
 
@@ -716,9 +677,7 @@ def _build_webqsp() -> ETKKGConfig:
         available_relations_text="",
         entity_extraction_examples=_WEBQSP_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
-        answer_mode="entity_set",
         has_name_en_field=False,
-        has_compound_entities=False,
     )
 
 
@@ -983,7 +942,5 @@ def _build_kqapro() -> ETKKGConfig:
         available_relations_text="",
         entity_extraction_examples=_KQAPRO_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
-        answer_mode="entity_set",
         has_name_en_field=False,
-        has_compound_entities=False,
     )
