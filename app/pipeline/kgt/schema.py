@@ -47,55 +47,62 @@ class KGSchema:
         max_depth: int = 3,
         shortest_only: bool = False
     ) -> List[SchemaPath]:
-        """全てのパスを探索（DFS）"""
+        """BFSで全パスを探索（原論文準拠: nx.all_shortest_paths相当）
+
+        shortest_only=True の場合、最短深さのパスのみ返す。
+        shortest_only=False の場合、max_depth以内の全パスを返す。
+        """
         if start_type not in self.adjacency or end_type not in self.adjacency:
             return []
 
+        from collections import deque
+
         all_paths: List[SchemaPath] = []
-        visited = {start_type}
+        shortest_depth: Optional[int] = None
 
-        def dfs(current: str, type_path: List[str], rel_path: List[str], dir_path: List[str], depth: int):
-            if depth > max_depth:
-                return
+        # BFS: (current_type, type_path, rel_path, dir_path, visited_set)
+        queue: deque = deque()
+        queue.append((start_type, [start_type], [], [], {start_type}))
 
-            # 目的地に到達
-            if current == end_type and depth > 0:
-                full_path = []
-                for i, t in enumerate(type_path):
-                    full_path.append(t)
-                    if i < len(rel_path):
-                        full_path.append(rel_path[i])
-                all_paths.append(SchemaPath(
-                    path=full_path,
-                    types=type_path.copy(),
-                    relations=rel_path.copy(),
-                    directions=dir_path.copy()
-                ))
-                return
+        while queue:
+            current, type_path, rel_path, dir_path, visited = queue.popleft()
+            depth = len(rel_path)
 
-            # 隣接ノードを探索
+            # shortest_only で最短より深いパスはスキップ
+            if shortest_only and shortest_depth is not None and depth >= shortest_depth:
+                continue
+            if depth >= max_depth:
+                continue
+
             for neighbor, relation, direction in self.adjacency.get(current, []):
-                if neighbor not in visited or neighbor == end_type:
-                    visited.add(neighbor)
-                    dfs(
+                if neighbor == end_type:
+                    new_type_path = type_path + [neighbor]
+                    new_rel_path = rel_path + [relation]
+                    new_dir_path = dir_path + [direction]
+                    full_path = []
+                    for i, t in enumerate(new_type_path):
+                        full_path.append(t)
+                        if i < len(new_rel_path):
+                            full_path.append(new_rel_path[i])
+                    all_paths.append(SchemaPath(
+                        path=full_path,
+                        types=new_type_path,
+                        relations=new_rel_path,
+                        directions=new_dir_path,
+                    ))
+                    if shortest_only and shortest_depth is None:
+                        shortest_depth = depth + 1
+                elif neighbor not in visited:
+                    new_visited = visited | {neighbor}
+                    queue.append((
                         neighbor,
                         type_path + [neighbor],
                         rel_path + [relation],
                         dir_path + [direction],
-                        depth + 1
-                    )
-                    if neighbor != end_type:
-                        visited.discard(neighbor)
+                        new_visited,
+                    ))
 
-        dfs(start_type, [start_type], [], [], 0)
-
-        # 深さでソート
         all_paths.sort(key=lambda p: len(p.relations))
-
-        if shortest_only and all_paths:
-            min_depth = len(all_paths[0].relations)
-            all_paths = [p for p in all_paths if len(p.relations) == min_depth]
-
         return all_paths
 
 
