@@ -746,6 +746,9 @@ class ExtendedTypeKoPLPipeline:
         self.reranker_input_k = reranker_input_k
         self.reranker = create_reranker(reranker_type, model=model, kg_type=kg_type)
 
+        # PcQA: CancerCell 複合エンティティ解決時の検索語 (per-sample, run() で設定)
+        self._compound_search_term: Optional[str] = None
+
         # LLM Cypher generation flag
         self.use_llm_cypher = use_llm_cypher
         self.cypher_informed_rerank = cypher_informed_rerank
@@ -1025,6 +1028,43 @@ Return the extracted entity information."""
         # Property filters from KoPL (set during Phase 1, applied in Phase 4)
         self._active_filters: Optional[List[PropertyFilterSchema]] = None
 
+        # PcQA: CancerCell 複合エンティティ解決
+        # 質問が "gene + cancer" の組合せを CancerCell ノード名で要求する場合、
+        # anchor を gene/fusion から CancerCell に切り替えて name CONTAINS で
+        # 部分一致検索する。これは PcQA のノード命名規則 (合成名) への適応であり、
+        # 他 KG では発火しない。
+        self._compound_search_term = None
+        if (
+            self.kg_type == "pcqa"
+            and entity_type
+            and entity_type.lower() in ("genesymbol", "fusion")
+            and entity_name
+        ):
+            from pipeline.common.pcqa import (
+                resolve_pcqa_compound_entity,
+                CANCERCELL_KEYWORDS,
+            )
+
+            gene_name = entity_name  # 元の遺伝子名を保持
+            compound = resolve_pcqa_compound_entity(
+                self.llm, self.finder, question, entity_name, entity_type
+            )
+            if compound:
+                compound_name, compound_type, _compound_names = compound
+                log.append(
+                    f"  PcQA CancerCell resolved: {entity_name} -> {compound_name} ({compound_type})"
+                )
+                entity_name = compound_name
+                entity_type = compound_type
+                self._compound_search_term = gene_name
+            elif any(kw in question.lower() for kw in CANCERCELL_KEYWORDS):
+                # Compound resolution 失敗でもキーワードから CancerCell と推定
+                log.append(
+                    f"  PcQA CancerCell fallback: using CONTAINS for {gene_name}"
+                )
+                entity_type = "CancerCell"
+                self._compound_search_term = gene_name
+
         # Dynamic local schema for large / unknown KGs
         original_schema = None
         self._using_local_schema = False
@@ -1243,6 +1283,118 @@ Return the extracted entity information."""
             for es in entity_sets:
                 log.append(f"    Set with {len(es.entities)} entities")
 
+            # Phase 4.5a Fallback: If selected (Top-1) path returned nothing,
+            # try the other candidate paths from Phase 2/3 before falling back
+            # to LLM correction. This is KG-agnostic — the reranker may have
+            # mis-ranked a valid path or the Top-1 may be empty by chance.
+            if (
+                not entity_sets
+                and candidate_paths
+                and selected_paths
+                and not (kopl_program and kopl_program.children)  # skip for intersection queries
+            ):
+                other_paths = [p for p in candidate_paths if p not in selected_paths]
+                if other_paths:
+                    log.append(
+                        f"Phase 4.5a: Top-1 empty, trying {min(len(other_paths), 3)} other candidate path(s)"
+                    )
+                    fallback_sets = self._retrieve_entities(kopl_program, other_paths[:3])
+                    if fallback_sets:
+                        entity_sets = fallback_sets
+                        selected_paths = [s.source_path for s in fallback_sets if s.source_path]
+                        log.append(f"  Recovered {len(entity_sets)} entity sets from fallback path")
+                        for es in entity_sets:
+                            log.append(f"    Set with {len(es.entities)} entities")
+
+            # Phase 4.5c: CancerCell hub 2-hop fallback (PcQA only).
+            # PcQA の KG 構造 (CancerCell ハブ) への適応。他 KG では no-op。
+            if (
+                not entity_sets
+                and not (kopl_program and kopl_program.children)
+            ):
+                hub_sets = self._cancercell_hub_fallback(
+                    entity_name, entity_type, selected_paths or candidate_paths
+                )
+                if hub_sets:
+                    entity_sets = hub_sets
+                    log.append(
+                        f"Phase 4.5c: CancerCell hub fallback recovered "
+                        f"{len(hub_sets)} entity set(s)"
+                    )
+                    for es in hub_sets:
+                        log.append(f"    Set with {len(es.entities)} entities")
+
+            # Phase 4.5b: answer_type validation
+            #
+            # Verify that the retrieved entities actually carry the type that
+            # the KoPL chain claims to traverse to. The expected type is the
+            # ``tgt_type`` of the last relation in the (single-anchor) chain;
+            # we ignore intersection queries here because each child has its
+            # own final type. When NONE of the sampled entities match, the
+            # chain almost certainly ends at the wrong type (e.g. extra hop or
+            # wrong final relation) and we route through the same correction
+            # loop with a type-mismatch feedback message instead of the
+            # generic empty-result one. This is KG-agnostic.
+            #
+            # Skip ambiguous "value" types (Date / Number / Text / Language)
+            # whose Neo4j label often collides with literal entity names
+            # (e.g. "2012" exists as both a Movie title and a Date node in
+            # MetaQA), which would otherwise produce false positives.
+            type_mismatch_feedback: Optional[str] = None
+
+            def _expected_chain_end(prog: Optional[KoPLOperation]) -> Optional[str]:
+                if not prog or prog.children:
+                    return None
+                if not prog.relations:
+                    return None
+                tgt = prog.relations[-1].tgt_type
+                if not tgt or tgt not in self.schema.types:
+                    return None
+                if tgt in {"Date", "Number", "Text", "Language"}:
+                    return None
+                return tgt
+
+            expected_chain_end = _expected_chain_end(kopl_program)
+            if (
+                entity_sets
+                and self.max_correction_rounds > 0
+                and expected_chain_end is not None
+            ):
+                # Sample up to 10 entities across all sets and check labels
+                sample_ents: List[str] = []
+                for es in entity_sets:
+                    sample_ents.extend(list(es.entities)[:5])
+                    if len(sample_ents) >= 10:
+                        break
+                sample_ents = sample_ents[:10]
+
+                actual_labels: Set[str] = set()
+                matches = 0
+                for ent in sample_ents:
+                    labels = self._get_node_labels(ent)
+                    actual_labels.update(labels)
+                    if expected_chain_end in labels:
+                        matches += 1
+
+                if matches == 0 and actual_labels:
+                    actual_str = ", ".join(sorted(actual_labels))
+                    n_total = sum(len(es.entities) for es in entity_sets)
+                    path_descs = [p.to_text() for p in selected_paths[:3]] if selected_paths else []
+                    type_mismatch_feedback = (
+                        f"Cypher returned {n_total} entities, but their actual node "
+                        f"labels are [{actual_str}], not the chain's terminal type "
+                        f"'{expected_chain_end}'. The relation chain ends at the "
+                        f"wrong type. Likely cause: an extra hop, a missing hop, or "
+                        f"the final relation traverses in the wrong direction. "
+                        f"Please rewrite the KoPL so the chain ends at "
+                        f"'{expected_chain_end}'. Paths tried: {'; '.join(path_descs)}."
+                    )
+                    log.append(
+                        f"Phase 4.5b: type mismatch — expected {expected_chain_end}, "
+                        f"got {actual_str} ({n_total} entities). Routing to correction loop."
+                    )
+                    entity_sets = []  # trigger correction loop
+
             # Phase 4→1 Correction: if Cypher returned 0 entities, retry with feedback
             p4_correction = 0
             while (
@@ -1254,11 +1406,15 @@ Return the extracted entity information."""
                 log.append(f"Phase 4→1 Correction Round {p4_correction}")
                 # Build feedback: which paths were tried and returned nothing
                 path_descs = [p.to_text() for p in selected_paths[:3]]
-                feedback = (
-                    f"Cypher execution returned 0 results for anchor '{entity_name}' "
-                    f"with paths: {'; '.join(path_descs)}. "
-                    f"The entity may have a different name in the KG, or the relation path is wrong."
-                )
+                if type_mismatch_feedback:
+                    feedback = type_mismatch_feedback
+                    type_mismatch_feedback = None  # use only on first round
+                else:
+                    feedback = (
+                        f"Cypher execution returned 0 results for anchor '{entity_name}' "
+                        f"with paths: {'; '.join(path_descs)}. "
+                        f"The entity may have a different name in the KG, or the relation path is wrong."
+                    )
                 diagnosis = self._diagnose_phase2_failure(kopl_program)
                 full_diag = f"{feedback}\nSchema info:\n{diagnosis}"
                 log.append(f"  Feedback: {feedback[:200]}")
@@ -3639,6 +3795,86 @@ Return a JSON object with operations array, final_operation, and optionally filt
 
         return entity_sets
 
+    def _cancercell_hub_fallback(
+        self,
+        entity_name: Optional[str],
+        entity_type: Optional[str],
+        selected_paths: List[SchemaPath],
+    ) -> List[EntitySet]:
+        """PcQA: CancerCell hub 2-hop fallback.
+
+        PcQA の KG は CancerCell ノードをハブとして Gene/Snv/Fusion と Drug
+        を繋ぐ構造を持つ。LLM が KoPL を正しく生成しても、Cypher 上の
+        関係方向やノード命名のずれで 0 件になることがあるため、
+        CancerCell を明示的に経由する 2-hop パスを直接実行して復旧する。
+        他 KG では何もしない。
+        """
+        if self.kg_type != "pcqa":
+            return []
+        if not entity_name or not entity_type:
+            return []
+        et = entity_type.lower()
+        if et not in ("genesymbol", "snvfull", "fusion", "cancercell"):
+            return []
+
+        graph = self.finder.graph
+        search_name = self._compound_search_term or entity_name
+
+        if et == "snvfull":
+            cc_match = (
+                "MATCH (cc:CancerCell)-[:HAS_VAR]->(snv:SnvFull) "
+                "WHERE toLower(snv.name) = toLower($name)"
+            )
+        elif et == "cancercell":
+            cc_match = (
+                "MATCH (cc:CancerCell) "
+                "WHERE toLower(cc.name) CONTAINS toLower($name)"
+            )
+        else:
+            # genesymbol / fusion: CancerCell 名に遺伝子名が含まれる慣習
+            cc_match = (
+                "MATCH (cc:CancerCell) "
+                "WHERE toLower(cc.name) CONTAINS toLower($name)"
+            )
+
+        target_labels: Set[str] = set()
+        for p in selected_paths:
+            if not p.types:
+                continue
+            for t in (p.types[-1], p.types[0]):
+                if t and t.lower() not in ("cancercell", et):
+                    target_labels.add(t)
+        if not target_labels:
+            target_labels = {"Drug"}
+
+        entity_sets: List[EntitySet] = []
+        for tgt_label in target_labels:
+            label_str = f"`{tgt_label}`" if any(
+                c in tgt_label for c in "/ .-"
+            ) else tgt_label
+            cypher = f"""
+{cc_match}
+MATCH (cc)-[r]-(tgt:{label_str})
+WHERE cc <> tgt AND tgt.name IS NOT NULL
+RETURN DISTINCT tgt.name AS name
+LIMIT 30
+"""
+            try:
+                records = graph.run(cypher, name=search_name).data()
+            except Exception:
+                continue
+            names = {r["name"] for r in records if r.get("name")}
+            if names:
+                entity_sets.append(
+                    EntitySet(
+                        entities=names,
+                        source_path=None,
+                        anchor_name=entity_name,
+                    )
+                )
+
+        return entity_sets
+
     def _execute_cypher_llm_generated(
         self, path: SchemaPath, anchor_name: str, question: str
     ) -> Set[str]:
@@ -3858,8 +4094,13 @@ Generate ONLY the Cypher query, nothing else:"""
                 return f"`{r}`"
             return r
 
-        where_anchor = "toLower(a.name) = toLower($anchor_name)"
-        params = {"anchor_name": anchor_name}
+        if self._compound_search_term:
+            # PcQA: CancerCell 複合エンティティは name CONTAINS で部分一致
+            where_anchor = "toLower(a.name) CONTAINS toLower($search_term)"
+            params = {"search_term": self._compound_search_term}
+        else:
+            where_anchor = "toLower(a.name) = toLower($anchor_name)"
+            params = {"anchor_name": anchor_name}
 
         if len(path.types) < 2:
             return None, {}
