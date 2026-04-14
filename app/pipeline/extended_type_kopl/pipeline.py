@@ -742,6 +742,7 @@ class ExtendedTypeKoPLPipeline:
         schema_distill: bool = True,
         cypher_informed_rerank: bool = False,
         enhanced_scoring: bool = True,
+        anchor_reorient: bool = True,
     ):
         if not os.getenv("OPENAI_API_KEY"):
             settings = get_settings()
@@ -809,6 +810,7 @@ class ExtendedTypeKoPLPipeline:
         self.max_correction_rounds = max_correction_rounds
         self.schema_distill = schema_distill
         self.enhanced_scoring = enhanced_scoring
+        self.anchor_reorient = anchor_reorient
 
         # Retrieval-based few-shot pool (MMR selection)
         self.few_shot_k = few_shot_k
@@ -1861,7 +1863,7 @@ Step 1:"""
                     log.append("Phase 1.5: KoPL consistency OK")
 
             # Phase 1.6: Re-orient KoPL relations so the type chain starts at the anchor
-            if kopl_program and entity_name:
+            if kopl_program and entity_name and self.anchor_reorient:
                 reoriented = self._reorient_relations_from_anchor(kopl_program, entity_name)
                 if reoriented:
                     log.append(
@@ -1890,7 +1892,7 @@ Step 1:"""
                     log.append("  Correction failed (LLM returned None)")
                     break
                 log.append(f"  Corrected KoPL: {len(corrected.relations)} relations")
-                if entity_name:
+                if entity_name and self.anchor_reorient:
                     self._reorient_relations_from_anchor(corrected, entity_name)
                 corrected = self._verify_and_correct_type_path(corrected)
                 candidate_paths = self._hybrid_schema_search(corrected)
@@ -2152,7 +2154,7 @@ Step 1:"""
                     if not corrected:
                         log.append("  Correction failed")
                         break
-                    if entity_name:
+                    if entity_name and self.anchor_reorient:
                         self._reorient_relations_from_anchor(corrected, entity_name)
                     corrected = self._verify_and_correct_type_path(corrected)
                     new_paths = self._hybrid_schema_search(corrected)
@@ -3385,7 +3387,7 @@ Output:
                     # 各候補を anchor 起点に正規化してからスコア計算する。
                     # これにより chain connectivity の信号が LLM 出力の
                     # canonical 方向バイアスに左右されない
-                    if entity_name:
+                    if entity_name and self.anchor_reorient:
                         self._reorient_relations_from_anchor(kopl, entity_name)
                     score = self._score_schema_compatibility(kopl)
                     candidates.append((kopl, score))

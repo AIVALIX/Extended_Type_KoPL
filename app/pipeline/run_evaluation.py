@@ -1266,6 +1266,12 @@ Examples:
         help="Use the legacy schema-only multi-candidate scoring (disable chain/answer-type enhancements)",
     )
     p.add_argument(
+        "--no-anchor-reorient",
+        action="store_true",
+        default=False,
+        help="Disable Phase 1.6 anchor-based KoPL reorientation (for Fix A ablation)",
+    )
+    p.add_argument(
         "--model",
         type=str,
         default=None,
@@ -1428,6 +1434,9 @@ Examples:
             if args.plain_scoring:
                 pipeline_kwargs["enhanced_scoring"] = False
                 print("  (enhanced_scoring=False [plain mode])")
+            if args.no_anchor_reorient:
+                pipeline_kwargs["anchor_reorient"] = False
+                print("  (anchor_reorient=False [Fix A disabled])")
             # Retrieval-based few-shot
             few_shot_pool = args.few_shot_pool
             if few_shot_pool == "auto":
