@@ -12,7 +12,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from core.config import BASEMODEL, get_settings
+from core.config import BASEMODEL, LLM_API_BASE, get_settings
 
 
 class PathSelectionResponse(BaseModel):
@@ -67,7 +67,13 @@ class LLMReranker(BaseReranker):
 
         from langchain.chat_models import init_chat_model
 
-        self.llm = init_chat_model(model, model_provider="openai", temperature=0)
+        llm_kwargs = {"model_provider": "openai", "temperature": 0}
+        # runtime に env を読む（import 時キャプチャ問題を回避）
+        api_base = os.getenv("LLM_API_BASE", "") or LLM_API_BASE or None
+        if api_base:
+            llm_kwargs["base_url"] = api_base
+            llm_kwargs["api_key"] = "sk-local"
+        self.llm = init_chat_model(model, **llm_kwargs)
         self.kg_type = kg_type
 
     def _get_path_description(self, path) -> str:

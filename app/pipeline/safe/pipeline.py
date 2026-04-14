@@ -58,7 +58,12 @@ class SAFEPipeline:
         from langchain.chat_models import init_chat_model
         from langchain_openai import OpenAIEmbeddings
 
-        self.llm = init_chat_model(model, model_provider="openai", temperature=0)
+        llm_kwargs = {"model_provider": "openai", "temperature": 0}
+        api_base = os.getenv("LLM_API_BASE", "") or None
+        if api_base:
+            llm_kwargs["base_url"] = api_base
+            llm_kwargs["api_key"] = "sk-local"
+        self.llm = init_chat_model(model, **llm_kwargs)
         self.embeddings = OpenAIEmbeddings(model=embedding_model)
 
         self.kg_type = kg_type
@@ -176,20 +181,20 @@ class SAFEPipeline:
         best_qg = candidate_qgs[0]
         log.append(f"  Best QG distance: {best_qg.total_distance:.4f}")
 
-        # Step 3: Cypher Execution (primary) -> Algorithm 2 (fallback)
-        log.append("Phase 3: Cypher Execution")
-        answer_entities = self._cypher_execution(best_qg, pseudo_edges)
-        log.append(f"  Cypher returned {len(answer_entities)} answers")
+        # Step 3: Algorithm 2 (primary) -> Cypher (fallback)
+        # 原論文 (Lee et al., EMNLP 2025) では Algorithm 2 が唯一の検索手段
+        log.append("Phase 3: Algorithm 2 (Ranked Semantic Subgraph Matching)")
+        k = self.k_retrieval
+        matched_subgraphs = self._subgraph_matching(best_qg, pseudo_edges, k=k)
+        log.append(f"  Algorithm 2 found {len(matched_subgraphs)} matched subgraphs")
+        answer_entities = self._extract_answers(matched_subgraphs, pseudo_edges)
+        log.append(f"  Extracted {len(answer_entities)} answer entities")
 
-        matched_subgraphs = []
         if not answer_entities:
-            # Fallback: Algorithm 2
-            log.append("  Cypher returned 0 results, falling back to Algorithm 2")
-            k = self.k_retrieval
-            matched_subgraphs = self._subgraph_matching(best_qg, pseudo_edges, k=k)
-            log.append(f"  Algorithm 2 found {len(matched_subgraphs)} matched subgraphs")
-            answer_entities = self._extract_answers(matched_subgraphs, pseudo_edges)
-            log.append(f"  Extracted {len(answer_entities)} answer entities")
+            # Fallback: Cypher Execution
+            log.append("  Algorithm 2 returned 0 results, falling back to Cypher execution")
+            answer_entities = self._cypher_execution(best_qg, pseudo_edges)
+            log.append(f"  Cypher returned {len(answer_entities)} answers")
 
         return SAFEResult(
             question=question,
