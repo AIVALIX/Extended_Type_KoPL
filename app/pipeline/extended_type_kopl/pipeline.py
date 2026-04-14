@@ -13,10 +13,26 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+# Valid unquoted Cypher identifier: [A-Za-z_][A-Za-z0-9_]*. Anything else
+# (spaces, commas, parentheses, slashes, hyphens, dots, ...) must be
+# backtick-quoted. KQA-Pro has ~2.5% of relation names that require this.
+_CYPHER_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _quote_cypher_ident(name: str) -> str:
+    """Backtick-quote a Cypher identifier unless it is a plain word.
+
+    Escapes literal backticks inside the name by doubling them (Neo4j rule).
+    """
+    if _CYPHER_IDENT_RE.match(name):
+        return name
+    return "`" + name.replace("`", "``") + "`"
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -3228,15 +3244,8 @@ Generate ONLY the Cypher query, nothing else:"""
         # アンカーが末端側にある場合、パスを反転
         path = self._orient_path_for_anchor(path, anchor_name)
 
-        def get_label(t: str) -> str:
-            if "/" in t or "." in t or " " in t:
-                return f"`{t}`"
-            return t
-
-        def get_rel(r: str) -> str:
-            if " " in r or "-" in r or "/" in r or "." in r:
-                return f"`{r}`"
-            return r
+        get_label = _quote_cypher_ident
+        get_rel = _quote_cypher_ident
 
         if self._compound_search_term:
             # PcQA: CancerCell 複合エンティティは name CONTAINS で部分一致
@@ -3365,9 +3374,7 @@ Generate ONLY the Cypher query, nothing else:"""
         """
         try:
             if len(path.types) == 2:
-                rel = path.relations[0]
-                if " " in rel or "-" in rel or "/" in rel or "." in rel:
-                    rel = f"`{rel}`"
+                rel = _quote_cypher_ident(path.relations[0])
                 cypher = f"""
                 MATCH (a)-[r:{rel}]-(b)
                 WHERE {where_anchor} AND a <> b
@@ -3375,12 +3382,8 @@ Generate ONLY the Cypher query, nothing else:"""
                 LIMIT 200
                 """
             elif len(path.types) == 3:
-                r0 = path.relations[0]
-                r1 = path.relations[1]
-                if " " in r0 or "-" in r0 or "/" in r0 or "." in r0:
-                    r0 = f"`{r0}`"
-                if " " in r1 or "-" in r1 or "/" in r1 or "." in r1:
-                    r1 = f"`{r1}`"
+                r0 = _quote_cypher_ident(path.relations[0])
+                r1 = _quote_cypher_ident(path.relations[1])
                 cypher = f"""
                 MATCH (a)-[:{r0}]-(mid)-[:{r1}]-(b)
                 WHERE {where_anchor} AND a <> mid AND mid <> b AND a <> b
