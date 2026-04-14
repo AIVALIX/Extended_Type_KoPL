@@ -23,21 +23,25 @@ if TYPE_CHECKING:
     )
 
 
-# Phase 1 prompt section appended to _build_kopl_prompt for kqapro.
-ANSWER_TYPE_INFO = """
-ANSWER TYPE FUNCTIONS — set answer_type and required fields.
+# Phase 1 prompt fragments per answer_type. build_answer_type_info(...) in
+# pipeline.py stitches together the rows that the KG actually supports, so
+# the prompt only advertises types we can actually resolve.
 
-  answer_type        | Required fields                                              | Output
-  -------------------|--------------------------------------------------------------|------------------
-  "entity"           | operations                                                   | entity names
-  "count"            | operations                                                   | integer
-  "attr"             | operations, query_key                                        | attribute value
-  "relation"         | select_entity_a, select_entity_b                             | relation name
-  "verify"           | operations, query_key, verify_value, verify_op               | "yes" / "no"
-  "select"           | query_key, select_mode, [select_entity_a, select_entity_b]   | entity name
-  "attr_qualifier"   | operations, match_attr_key, match_attr_value, qualifier_key  | qualifier value
-  "relation_qualifier"| select_entity_a, select_entity_b, query_key, qualifier_key  | qualifier value
+# Table row per answer_type (column alignment matches the original layout).
+ANSWER_TYPE_ROWS = {
+    "entity":             '  "entity"           | operations                                                   | entity names',
+    "count":              '  "count"            | operations                                                   | integer',
+    "attr":               '  "attr"             | operations, query_key                                        | attribute value',
+    "relation":           '  "relation"         | select_entity_a, select_entity_b                             | relation name',
+    "verify":             '  "verify"           | operations, query_key, verify_value, verify_op               | "yes" / "no"',
+    "select":             '  "select"           | query_key, select_mode, [select_entity_a, select_entity_b]   | entity name',
+    "attr_qualifier":     '  "attr_qualifier"   | operations, match_attr_key, match_attr_value, qualifier_key  | qualifier value',
+    "relation_qualifier": '  "relation_qualifier"| select_entity_a, select_entity_b, query_key, qualifier_key  | qualifier value',
+}
 
+# Qualifier-related guidance; only injected when the KG supports the
+# KB-backed types (KQA-Pro's Wikidata qualifiers).
+_KB_GUIDANCE = """
 THINK STEP BY STEP before choosing answer_type:
 1. Identify the entities mentioned in the question
 2. Determine what the question is asking for (entity name? count? attribute value? metadata?)
@@ -51,6 +55,34 @@ Key distinctions:
 - "relation" asks for the PREDICATE name → "What is the relation between X and Y?"
 - "relation_qualifier" asks for METADATA of a relation → "When was X nominated for Y?"
 - "select" with two named entities: set select_entity_a/b. With a concept set: use operations + select_mode only."""
+
+# Short note used when only the agnostic types (entity/count/relation) are
+# available. Helps the LLM still pick count/relation instead of defaulting
+# to entity for "how many" or "what is the relation between".
+_AGNOSTIC_GUIDANCE = """
+Pick the narrowest answer_type the question asks for:
+- "How many X?" → "count"
+- "What is the relation between X and Y?" → "relation" (set select_entity_a/b)
+- Otherwise → "entity\""""
+
+
+def build_answer_type_info(supported: set) -> str:
+    """Build the Phase 1 prompt fragment listing answer types this KG supports.
+
+    Returns an empty string when the KG only supports the "entity" default
+    (so the prompt stays completely agnostic for simple KGs).
+    """
+    ordered = ["entity", "count", "attr", "relation", "verify", "select", "attr_qualifier", "relation_qualifier"]
+    rows = [ANSWER_TYPE_ROWS[t] for t in ordered if t in supported]
+    if len(rows) <= 1:
+        return ""  # entity-only KG: no need for a section
+    header = (
+        "\nANSWER TYPE FUNCTIONS — set answer_type and required fields.\n\n"
+        "  answer_type        | Required fields                                              | Output\n"
+        "  -------------------|--------------------------------------------------------------|------------------\n"
+    )
+    guidance = _KB_GUIDANCE if supported & {"attr", "verify", "select", "attr_qualifier", "relation_qualifier"} else _AGNOSTIC_GUIDANCE
+    return header + "\n".join(rows) + "\n" + guidance
 
 def init_kb_store(kg_type: str):
     """Instantiate KBPropertyStore for KQA-Pro, or return None for other KGs."""
@@ -160,28 +192,25 @@ def resolve_query_key_dynamic(
 
 
 
-def resolve_extended_answer(
+def resolve_kb_answer(
     pipeline,
     kopl: KoPLOperation,
     answer_entities: List[str],
     entity_name: Optional[str],
     log: List[str],
 ) -> str:
-    """Phase 6: KQA-Pro extended answer type resolution.
+    """Phase 6 resolver for the KB-backed answer_types.
 
-    Uses KBPropertyStore (kb.json) for attribute lookups when available,
-    falls back to Neo4j for relation queries.
+    Handles attr / verify / select / attr_qualifier / relation_qualifier.
+    Requires ``pipeline.kb_store`` to be set (currently only KQA-Pro).
+    The KG-agnostic count / relation resolvers live in pipeline.py and
+    run before this function, so we can assume ``atype`` is one of the
+    KB-backed types here.
     """
-    graph = pipeline.finder.graph
     atype = kopl.answer_type
-    store = pipeline.kb_store  # may be None for non-KQA-Pro KGs
+    store = pipeline.kb_store
 
     log.append(f"Phase 6: Extended answer ({atype})")
-
-    if atype == "count":
-        ans = str(len(answer_entities))
-        log.append(f"  Count: {ans}")
-        return ans
 
     if atype == "attr" and kopl.query_key:
         target = answer_entities[0] if answer_entities else entity_name
@@ -195,30 +224,6 @@ def resolve_extended_answer(
                 return val
             log.append(f"  QueryAttr({kopl.query_key}) on '{target}': no value in KB")
         return ""
-
-    if atype == "relation":
-        ent_a = kopl.select_entity_a or entity_name
-        ent_b = kopl.select_entity_b
-        if not ent_a or not ent_b:
-            log.append("  Need two entities for relation query")
-            return ""
-        try:
-            cypher = (
-                "MATCH (a)-[r]-(b) "
-                "WHERE toLower(a.name) = toLower($a) AND toLower(b.name) = toLower($b) "
-                "RETURN type(r) AS rel LIMIT 5"
-            )
-            records = graph.run(cypher, a=ent_a, b=ent_b).data()
-            if records:
-                rels = [r["rel"] for r in records]
-                ans = rels[0].replace("_", " ")
-                log.append(f"  QueryRelation('{ent_a}', '{ent_b}'): {rels}")
-                return ans
-            log.append(f"  No relation found between '{ent_a}' and '{ent_b}'")
-            return ""
-        except Exception as e:
-            log.append(f"  QueryRelation error: {e}")
-            return ""
 
     if atype == "verify":
         target = answer_entities[0] if answer_entities else entity_name

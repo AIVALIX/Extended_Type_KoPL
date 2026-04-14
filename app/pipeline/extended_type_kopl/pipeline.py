@@ -42,10 +42,12 @@ logger = logging.getLogger(__name__)
 from core.config import BASEMODEL, LLM_API_BASE, get_settings
 from database.search import GraphPathFinder
 from pipeline.extended_type_kopl.kg_config import (
-    ETKKGConfig,
-    build_etk_kg_config,
+    AGNOSTIC_ANSWER_TYPES,
     ALL_RELATION_NL,
+    KB_ANSWER_TYPES,
+    ETKKGConfig,
     auto_generate_relation_nl,
+    build_etk_kg_config,
 )
 from pipeline.extended_type_kopl.few_shot_pool import FewShotPool
 from pipeline.extended_type_kopl.reranker import create_reranker, BaseReranker
@@ -720,8 +722,7 @@ class ExtendedTypeKoPLPipeline:
 
         self.finder = GraphPathFinder(kg_type=kg_type)
 
-        # KQA-Pro: KB property store for attribute operations (delegated to adapter)
-        from pipeline.extended_type_kopl import kqapro_adapter
+        # KB property store (KQA-Pro only; init_kb_store returns None for other KGs)
         self.kb_store = kqapro_adapter.init_kb_store(kg_type)
 
         # KGからリレーション情報をキャッシュ（use_schema_relations=Falseの場合）
@@ -1462,12 +1463,12 @@ Return the extracted entity information."""
                     else:
                         log.append(f"Phase 5.5: KoPL filter would eliminate all {len(answer_entities)} entities, skipping")
 
-            # Phase 5.8: Dynamic property injection (KQA-Pro)
-            # For attr/verify/select/qualifier types, resolve keys using actual KB properties
+            # Phase 5.8: Dynamic property injection (KB-backed types only)
             answer_type = kopl_program.answer_type if kopl_program else "entity"
             if (
-                answer_type in ("attr", "verify", "select", "attr_qualifier", "relation_qualifier")
-                and kopl_program
+                kopl_program
+                and answer_type in KB_ANSWER_TYPES
+                and answer_type in self.kgc.supported_answer_types
                 and self.kb_store
             ):
                 resolved_key = kqapro_adapter.resolve_query_key_dynamic(
@@ -1476,11 +1477,22 @@ Return the extracted entity information."""
                 if resolved_key:
                     kopl_program.query_key = resolved_key
 
-            # Phase 6: Extended answer type processing (KQA-Pro)
-            if answer_type != "entity" and kopl_program:
-                natural_answer = kqapro_adapter.resolve_extended_answer(
-                    self, kopl_program, answer_entities, entity_name, log
-                )
+            # Phase 6: Extended answer type processing (capability-driven dispatch)
+            if (
+                kopl_program
+                and answer_type != "entity"
+                and answer_type in self.kgc.supported_answer_types
+            ):
+                if answer_type in AGNOSTIC_ANSWER_TYPES:
+                    # KG-agnostic: count / relation, handled inline.
+                    natural_answer = self._resolve_agnostic_answer(
+                        kopl_program, answer_entities, entity_name, log
+                    )
+                elif self.kb_store:
+                    # KB-backed: delegate to the kqapro adapter.
+                    natural_answer = kqapro_adapter.resolve_kb_answer(
+                        self, kopl_program, answer_entities, entity_name, log
+                    )
 
             return ExtendedTypeKoPLResult(
                 question=question,
@@ -1821,8 +1833,10 @@ Filterable properties (use filters array when the question mentions these):
 {chr(10).join(filter_lines)}
 """
 
-        # KQA-Pro extended answer types — concise function signatures (from adapter)
-        answer_type_info = kqapro_adapter.ANSWER_TYPE_INFO if self.kg_type == "kqapro" else ""
+        # Capability-driven: only advertise answer_types this KG can actually
+        # resolve. For entity-only KGs this returns "" and the prompt stays
+        # completely agnostic.
+        answer_type_info = kqapro_adapter.build_answer_type_info(self.kgc.supported_answer_types)
 
         return f"""Convert this question into an Atomic Type-KoPL program.
 
@@ -3416,6 +3430,53 @@ Generate ONLY the Cypher query, nothing else:"""
             except (ValueError, TypeError):
                 pass
         return (a > b) - (a < b)
+
+    def _resolve_agnostic_answer(
+        self,
+        kopl: KoPLOperation,
+        answer_entities: List[str],
+        entity_name: Optional[str],
+        log: List[str],
+    ) -> str:
+        """Phase 6 resolver for the KG-agnostic answer_types (count, relation).
+
+        These do not require a KBPropertyStore — count is just the cardinality
+        of the retrieved entity set, and relation runs a 1-hop Cypher between
+        two named entities. Both work on every KG.
+        """
+        atype = kopl.answer_type
+        log.append(f"Phase 6: Extended answer ({atype})")
+
+        if atype == "count":
+            ans = str(len(answer_entities))
+            log.append(f"  Count: {ans}")
+            return ans
+
+        if atype == "relation":
+            ent_a = kopl.select_entity_a or entity_name
+            ent_b = kopl.select_entity_b
+            if not ent_a or not ent_b:
+                log.append("  Need two entities for relation query")
+                return ""
+            try:
+                cypher = (
+                    "MATCH (a)-[r]-(b) "
+                    "WHERE toLower(a.name) = toLower($a) AND toLower(b.name) = toLower($b) "
+                    "RETURN type(r) AS rel LIMIT 5"
+                )
+                records = self.finder.graph.run(cypher, a=ent_a, b=ent_b).data()
+                if records:
+                    rels = [r["rel"] for r in records]
+                    ans = rels[0].replace("_", " ")
+                    log.append(f"  QueryRelation('{ent_a}', '{ent_b}'): {rels}")
+                    return ans
+                log.append(f"  No relation found between '{ent_a}' and '{ent_b}'")
+                return ""
+            except Exception as e:
+                log.append(f"  QueryRelation error: {e}")
+                return ""
+
+        return ""
 
     def _apply_kopl_operations(
         self, kopl_program: KoPLOperation, entity_sets: List[EntitySet]

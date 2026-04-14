@@ -10,7 +10,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+
+# answer_type sets for capability declaration. `entity`/`count`/`relation`
+# need no external KB (pure Cypher) and work on any KG. The remaining five
+# types (attr, verify, select, attr_qualifier, relation_qualifier) require
+# a KBPropertyStore — today that is only KQA-Pro's kb.json.
+AGNOSTIC_ANSWER_TYPES: Set[str] = {"entity", "count", "relation"}
+KB_ANSWER_TYPES: Set[str] = {"attr", "verify", "select", "attr_qualifier", "relation_qualifier"}
+ALL_ANSWER_TYPES: Set[str] = AGNOSTIC_ANSWER_TYPES | KB_ANSWER_TYPES
 
 
 @dataclass
@@ -44,6 +53,12 @@ class ETKKGConfig:
 
     # ── entity validation ─────────────────────────────────────────
     has_name_en_field: bool  # try name_en field during entity validation
+
+    # ── answer type capability ────────────────────────────────────
+    # Which KoPL answer_types the pipeline can resolve for this KG.
+    # Default covers the three KG-agnostic types (entity/count/relation).
+    # KQA-Pro overrides this with the full set because it has a KB.
+    supported_answer_types: Set[str] = field(default_factory=lambda: set(AGNOSTIC_ANSWER_TYPES))
 
 
 # =============================================================================
@@ -943,4 +958,7 @@ def _build_kqapro() -> ETKKGConfig:
         entity_extraction_examples=_KQAPRO_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
         has_name_en_field=False,
+        # KQA-Pro is the only KG with a KBPropertyStore (kb.json), so it
+        # unlocks every KoPL answer_type.
+        supported_answer_types=set(ALL_ANSWER_TYPES),
     )
