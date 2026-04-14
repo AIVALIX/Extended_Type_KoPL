@@ -47,12 +47,7 @@ class ETKKGConfig:
     #   entity_set  -> Phase 4 returns entity names, Phase 5 does set logic
     #   subgraph_nl -> Phase 4 retrieves subgraph with properties, Phase 6 LLM generates NL
 
-    # ── alias types (for Cypher label expansion) ──────────────────
-    # e.g. {"Cancer": ["Cancer", "CancerAlias"]}
-    alias_types: Dict[str, List[str]]
-
     # ── entity validation ─────────────────────────────────────────
-    has_alias_resolution: bool  # use IS_A alias resolution during entity validation
     has_name_en_field: bool  # try name_en field during entity validation
 
     # ── compound entity resolution (PcQA CancerCell style) ────────
@@ -117,7 +112,6 @@ _PCQA_REL_NL: Dict[str, Tuple[str, str]] = {
     "HAS_GENE": ("gene", "has gene"),
     "DEVELOP_TO": ("development", "develops to"),
     "INCLUDE_A": ("includes", "includes"),
-    "IS_A": ("alias", "is also known as"),
     "CAUSE_TO": ("cause", "causes"),
     "POSITIVE_REGULATED": ("positive regulation", "positively regulates"),
     "NEGATIVE_REGULATED": ("negative regulation", "negatively regulates"),
@@ -619,8 +613,6 @@ def _build_primekgqa() -> ETKKGConfig:
         entity_extraction_examples=_PRIMEKGQA_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
         answer_mode="entity_set",
-        alias_types={},
-        has_alias_resolution=False,
         has_name_en_field=False,
         has_compound_entities=False,
     )
@@ -645,8 +637,6 @@ def _build_metaqa() -> ETKKGConfig:
         entity_extraction_examples=_METAQA_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
         answer_mode="entity_set",
-        alias_types={},
-        has_alias_resolution=False,
         has_name_en_field=False,
         has_compound_entities=False,
     )
@@ -656,7 +646,7 @@ def _build_pcqa() -> ETKKGConfig:
     return ETKKGConfig(
         kg_type="pcqa",
         entity_types=[
-            "cancer", "cancercell", "canceralias", "drug", "drugalias",
+            "cancer", "cancercell", "drug",
             "genesymbol", "snvfull", "fusion", "geneticdisease", "clinicaltrial",
         ],
         type_priority=["drug", "cancer", "genesymbol", "snvfull"],
@@ -668,11 +658,6 @@ def _build_pcqa() -> ETKKGConfig:
         entity_extraction_examples=_PCQA_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties=_PCQA_FILTERABLE,
         answer_mode="subgraph_nl",
-        alias_types={
-            "Cancer": ["Cancer", "CancerAlias"],
-            "Drug": ["Drug", "DrugAlias"],
-        },
-        has_alias_resolution=True,
         has_name_en_field=True,
         has_compound_entities=True,
         compound_entity_types=["genesymbol", "fusion"],
@@ -732,8 +717,6 @@ def _build_webqsp() -> ETKKGConfig:
         entity_extraction_examples=_WEBQSP_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
         answer_mode="entity_set",
-        alias_types={},
-        has_alias_resolution=False,
         has_name_en_field=False,
         has_compound_entities=False,
     )
@@ -1001,8 +984,6 @@ def _build_kqapro() -> ETKKGConfig:
         entity_extraction_examples=_KQAPRO_ENTITY_EXTRACTION_EXAMPLES,
         filterable_properties={},
         answer_mode="entity_set",
-        alias_types={},
-        has_alias_resolution=False,
         has_name_en_field=False,
         has_compound_entities=False,
     )

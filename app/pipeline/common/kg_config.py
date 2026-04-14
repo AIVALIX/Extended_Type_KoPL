@@ -181,7 +181,7 @@ class KGConfig:
                 ),
             },
             schema_types=[
-                "Cancer", "CancerCell", "CancerAlias", "Drug", "DrugAlias",
+                "Cancer", "CancerCell", "Drug",
                 "Genesymbol", "GeneticDisease", "SnvFull", "Fusion", "ClinicalTrial",
             ],
         )

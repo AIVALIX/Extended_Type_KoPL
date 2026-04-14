@@ -711,9 +711,7 @@ class ExtendedTypeKoPLPipeline:
         "pcqa": [
             "cancer",
             "cancercell",
-            "canceralias",
             "drug",
-            "drugalias",
             "genesymbol",
             "snvfull",
             "fusion",
@@ -1041,24 +1039,12 @@ Target type:"""
             return None
 
     def _validate_entity_in_db(self, entity_name: str) -> Optional[str]:
-        """Validate entity name exists in database
+        """Validate entity name exists in database.
 
-        Checks both 'name' and 'name_en' fields (for PCQA)
-        Also resolves aliases via IS_A relationship
+        Checks both ``name`` and ``name_en`` fields (``name_en`` is used by
+        some KGs for an English-localized surface form).
         """
         try:
-            # For PCQA, try alias resolution FIRST (DrugAlias->Drug, CancerAlias->Cancer)
-            if self.kg_type == "pcqa":
-                cypher = """
-                MATCH (alias)-[:IS_A]->(main)
-                WHERE alias.name = $name
-                RETURN main.name AS name
-                LIMIT 1
-                """
-                records = self.finder.graph.run(cypher, name=entity_name).data()
-                if records:
-                    return records[0]["name"]
-
             # Try exact match on name
             cypher = """
             MATCH (n)
@@ -1070,7 +1056,7 @@ Target type:"""
             if records:
                 return records[0]["name"]
 
-            # Try name_en field (for PCQA)
+            # Try name_en field
             cypher = """
             MATCH (n)
             WHERE toLower(n.name_en) = toLower($name)
@@ -1087,23 +1073,8 @@ Target type:"""
             return None
 
     def _fuzzy_entity_search(self, entity_name: str) -> Optional[str]:
-        """Fuzzy search for entity name (case-insensitive, partial match)
-
-        For PCQA, also tries to resolve aliases via IS_A relationship (prioritized)
-        """
+        """Fuzzy search for entity name (case-insensitive, partial match)."""
         try:
-            # Case-insensitive alias resolution FIRST (for PCQA)
-            if self.kg_type == "pcqa":
-                cypher = """
-                MATCH (alias)-[:IS_A]->(main)
-                WHERE toLower(alias.name) = toLower($name)
-                RETURN main.name AS name
-                LIMIT 1
-                """
-                records = self.finder.graph.run(cypher, name=entity_name).data()
-                if records:
-                    return records[0]["name"]
-
             # Case-insensitive exact match
             cypher = """
             MATCH (n)
@@ -1168,24 +1139,6 @@ Target type:"""
                 # Return all found entities
                 return {r["answer"] for r in records if r["answer"]}
 
-            # Also try with alias types for PCQA
-            if self.kg_type == "pcqa":
-                alias_types = {
-                    "Cancer": "Cancer|CancerAlias",
-                    "Drug": "Drug|DrugAlias",
-                }
-                tgt_label = alias_types.get(tgt_type, tgt_type)
-
-                cypher = f"""
-                MATCH (src:{_esc(src_type)})-[r]-(tgt:{tgt_label})
-                WHERE toLower(src.name) = toLower($name)
-                RETURN DISTINCT tgt.name AS answer, type(r) AS rel
-                LIMIT 20
-                """
-                records = graph.run(cypher, name=entity_name).data()
-                if records:
-                    return {r["answer"] for r in records if r["answer"]}
-
             return set()
         except Exception as e:
             print(f"Direct path search error: {e}")
@@ -1233,17 +1186,9 @@ Target type:"""
             seen_names = set()
 
             for tgt_label in target_labels:
-                # Expand alias types
-                if tgt_label == "Cancer":
-                    tgt_cypher = "Cancer|CancerAlias"
-                elif tgt_label == "Drug":
-                    tgt_cypher = "Drug|DrugAlias"
-                else:
-                    tgt_cypher = tgt_label
-
                 cypher = f"""
                 {cc_match}
-                MATCH (cc)-[r]-(tgt:{tgt_cypher})
+                MATCH (cc)-[r]-(tgt:{tgt_label})
                 WHERE cc <> tgt
                 RETURN DISTINCT tgt AS entity, labels(tgt) AS labels, type(r) AS rel_type
                 LIMIT 30
@@ -1307,22 +1252,6 @@ Target type:"""
             if not src_type or not tgt_type:
                 return []
 
-            # PcQA: Expand to include alias types
-            ALIAS_TYPES = {
-                "Cancer": "Cancer|CancerAlias",
-                "Drug": "Drug|DrugAlias",
-            }
-            tgt_label = (
-                ALIAS_TYPES.get(tgt_type, tgt_type)
-                if self.kg_type == "pcqa"
-                else tgt_type
-            )
-            src_label = (
-                ALIAS_TYPES.get(src_type, src_type)
-                if self.kg_type == "pcqa"
-                else src_type
-            )
-
             def _esc(t: str) -> str:
                 if "/" in t or "." in t or " " in t:
                     return f"`{t}`"
@@ -1331,7 +1260,7 @@ Target type:"""
             # Try all direct relationships from entity to target type
             # Return full node properties
             cypher = f"""
-            MATCH (src:{_esc(src_label)})-[r]-(tgt:{_esc(tgt_label)})
+            MATCH (src:{_esc(src_type)})-[r]-(tgt:{_esc(tgt_type)})
             WHERE toLower(src.name) = toLower($name)
             RETURN DISTINCT tgt AS entity, labels(tgt) AS labels, type(r) AS rel_type
             LIMIT 30
@@ -1474,19 +1403,9 @@ Target type:"""
             "class_type",
         ]
 
-        # PCQA alias mapping: also search for alias types
-        ALIAS_TYPES = {
-            "Cancer": ["Cancer", "CancerAlias"],
-            "Drug": ["Drug", "DrugAlias"],
-        }
-
         def get_label(t: str) -> str:
             if "/" in t or "." in t or " " in t:
                 return f"`{t}`"
-            # For PCQA, expand Cancer/Drug to also include aliases
-            if t in ALIAS_TYPES:
-                labels = ALIAS_TYPES[t]
-                return "|".join(labels)  # Returns "Cancer|CancerAlias"
             return t
 
         def get_rel(r: str) -> str:
@@ -1512,12 +1431,7 @@ Target type:"""
                 anchor_norm = anchor_type.lower()
                 first_norm = path_types[0].lower()
                 last_norm = path_types[-1].lower()
-                # Also check alias types (Cancer/CancerAlias, Drug/DrugAlias)
-                alias_map = {"canceralias": "cancer", "drugalias": "drug"}
-                anchor_check = alias_map.get(anchor_norm, anchor_norm)
-                first_check = alias_map.get(first_norm, first_norm)
-                last_check = alias_map.get(last_norm, last_norm)
-                if anchor_check != first_check and anchor_check == last_check:
+                if anchor_norm != first_norm and anchor_norm == last_norm:
                     path_types = list(reversed(path_types))
                     path_rels = list(reversed(path_rels))
 
@@ -4738,16 +4652,9 @@ Generate ONLY the Cypher query, nothing else:"""
         # アンカーが末端側にある場合、パスを反転
         path = self._orient_path_for_anchor(path, anchor_name)
 
-        ALIAS_TYPES = {
-            "Cancer": ["Cancer", "CancerAlias"],
-            "Drug": ["Drug", "DrugAlias"],
-        }
-
         def get_label(t: str) -> str:
             if "/" in t or "." in t or " " in t:
                 return f"`{t}`"
-            if self.kg_type == "pcqa" and t in ALIAS_TYPES:
-                return "|".join(ALIAS_TYPES[t])
             return t
 
         def get_rel(r: str) -> str:

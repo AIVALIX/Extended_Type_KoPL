@@ -40,7 +40,7 @@ class KGTPipeline:
             "Movie", "Person", "Organization", "Text", "Date", "Language", "Number"
         ],
         "pcqa": [
-            "Cancer", "CancerCell", "CancerAlias", "Drug", "DrugAlias",
+            "Cancer", "CancerCell", "Drug",
             "Genesymbol", "SnvFull", "Fusion", "GeneticDisease", "ClinicalTrial"
         ],
     }
@@ -59,7 +59,12 @@ class KGTPipeline:
         from langchain.chat_models import init_chat_model
         from langchain_openai import OpenAIEmbeddings
 
-        self.llm = init_chat_model(model, model_provider="openai", temperature=0)
+        llm_kwargs = {"model_provider": "openai", "temperature": 0}
+        api_base = os.getenv("LLM_API_BASE", "") or None
+        if api_base:
+            llm_kwargs["base_url"] = api_base
+            llm_kwargs["api_key"] = "sk-local"
+        self.llm = init_chat_model(model, **llm_kwargs)
         self.embeddings = OpenAIEmbeddings(model=embedding_model)
         self.kg_type = kg_type
         self.schema = schema or build_schema_graph(kg_type)
