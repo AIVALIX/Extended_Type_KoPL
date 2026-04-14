@@ -267,6 +267,18 @@ PIPELINE_CONFIGS_PRIMEKGQA = {
         "name": "KGT",
         "datasets": ["one_hop", "two_hop", "two_intersection", "three_intersection"],
     },
+    "direct_qa": {
+        "name": "Direct QA",
+        "datasets": ["one_hop", "two_hop", "two_intersection", "three_intersection"],
+    },
+    "kg_gpt": {
+        "name": "KG-GPT",
+        "datasets": ["one_hop", "two_hop", "two_intersection", "three_intersection"],
+    },
+    "tog": {
+        "name": "ToG",
+        "datasets": ["one_hop", "two_hop", "two_intersection", "three_intersection"],
+    },
 }
 
 # パイプライン設定（MetaQA）
@@ -281,6 +293,18 @@ PIPELINE_CONFIGS_METAQA = {
     },
     "kgt": {
         "name": "KGT",
+        "datasets": ["1hop", "2hop", "3hop"],
+    },
+    "direct_qa": {
+        "name": "Direct QA",
+        "datasets": ["1hop", "2hop", "3hop"],
+    },
+    "kg_gpt": {
+        "name": "KG-GPT",
+        "datasets": ["1hop", "2hop", "3hop"],
+    },
+    "tog": {
+        "name": "ToG",
         "datasets": ["1hop", "2hop", "3hop"],
     },
 }
@@ -389,6 +413,18 @@ class PipelineRunner:
             from pipeline.kgt import KGTPipeline
 
             self.pipeline = KGTPipeline(**self.pipeline_kwargs)
+        elif self.pipeline_id == "direct_qa":
+            from pipeline.direct_qa import DirectQAPipeline
+
+            self.pipeline = DirectQAPipeline(**self.pipeline_kwargs)
+        elif self.pipeline_id == "kg_gpt":
+            from pipeline.kg_gpt import KGGPTPipeline
+
+            self.pipeline = KGGPTPipeline(**self.pipeline_kwargs)
+        elif self.pipeline_id == "tog":
+            from pipeline.tog import ToGPipeline
+
+            self.pipeline = ToGPipeline(**self.pipeline_kwargs)
         else:
             raise ValueError(f"Unknown pipeline: {self.pipeline_id}")
 
@@ -412,6 +448,12 @@ class PipelineRunner:
             if result.optimal_path:
                 return result.optimal_path.relations
             return None
+
+        elif self.pipeline_id == "direct_qa":
+            return None
+
+        elif self.pipeline_id in ("kg_gpt", "tog"):
+            return getattr(result, "explored_relations", None)
 
         return None
 
@@ -1218,6 +1260,18 @@ Examples:
         help="Enable Cypher-Informed Reranking: trial-execute candidate paths and show example results to Reranker",
     )
     p.add_argument(
+        "--plain-scoring",
+        action="store_true",
+        default=False,
+        help="Use the legacy schema-only multi-candidate scoring (disable chain/answer-type enhancements)",
+    )
+    p.add_argument(
+        "--no-anchor-reorient",
+        action="store_true",
+        default=False,
+        help="Disable Phase 1.6 anchor-based KoPL reorientation (for Fix A ablation)",
+    )
+    p.add_argument(
         "--model",
         type=str,
         default=None,
@@ -1341,6 +1395,9 @@ Examples:
         # primekgqa_raw / primekgqa_original は KG自体は primekgqa（データセットのみ異なる）
         pipeline_kg_type = "primekgqa" if kg_type in ("primekgqa_raw", "primekgqa_original") else kg_type
         pipeline_kwargs = {"kg_type": pipeline_kg_type}
+        # モデル名を明示的に渡す（spawn ワーカーでの BASEMODEL キャプチャタイミング問題を回避）
+        if args.model:
+            pipeline_kwargs["model"] = args.model
 
         # スキーマなしモード（Extended Type-KoPL, SAFE のみ対応）
         if args.no_schema and pipeline_id in ["extended_type_kopl", "safe"]:
@@ -1374,6 +1431,12 @@ Examples:
                 pipeline_kwargs["cypher_informed_rerank"] = True
                 print("  (cypher_informed_rerank=True)")
                 print(f"  (max_correction_rounds={args.max_correction_rounds})")
+            if args.plain_scoring:
+                pipeline_kwargs["enhanced_scoring"] = False
+                print("  (enhanced_scoring=False [plain mode])")
+            if args.no_anchor_reorient:
+                pipeline_kwargs["anchor_reorient"] = False
+                print("  (anchor_reorient=False [Fix A disabled])")
             # Retrieval-based few-shot
             few_shot_pool = args.few_shot_pool
             if few_shot_pool == "auto":

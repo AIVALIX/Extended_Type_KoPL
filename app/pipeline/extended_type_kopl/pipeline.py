@@ -741,6 +741,8 @@ class ExtendedTypeKoPLPipeline:
         use_llm_cypher: bool = False,
         schema_distill: bool = True,
         cypher_informed_rerank: bool = False,
+        enhanced_scoring: bool = True,
+        anchor_reorient: bool = True,
     ):
         if not os.getenv("OPENAI_API_KEY"):
             settings = get_settings()
@@ -807,6 +809,8 @@ class ExtendedTypeKoPLPipeline:
         self.n_kopl_candidates = n_kopl_candidates
         self.max_correction_rounds = max_correction_rounds
         self.schema_distill = schema_distill
+        self.enhanced_scoring = enhanced_scoring
+        self.anchor_reorient = anchor_reorient
 
         # Retrieval-based few-shot pool (MMR selection)
         self.few_shot_k = few_shot_k
@@ -1859,7 +1863,7 @@ Step 1:"""
                     log.append("Phase 1.5: KoPL consistency OK")
 
             # Phase 1.6: Re-orient KoPL relations so the type chain starts at the anchor
-            if kopl_program and entity_name:
+            if kopl_program and entity_name and self.anchor_reorient:
                 reoriented = self._reorient_relations_from_anchor(kopl_program, entity_name)
                 if reoriented:
                     log.append(
@@ -1888,7 +1892,7 @@ Step 1:"""
                     log.append("  Correction failed (LLM returned None)")
                     break
                 log.append(f"  Corrected KoPL: {len(corrected.relations)} relations")
-                if entity_name:
+                if entity_name and self.anchor_reorient:
                     self._reorient_relations_from_anchor(corrected, entity_name)
                 corrected = self._verify_and_correct_type_path(corrected)
                 candidate_paths = self._hybrid_schema_search(corrected)
@@ -2150,7 +2154,7 @@ Step 1:"""
                     if not corrected:
                         log.append("  Correction failed")
                         break
-                    if entity_name:
+                    if entity_name and self.anchor_reorient:
                         self._reorient_relations_from_anchor(corrected, entity_name)
                     corrected = self._verify_and_correct_type_path(corrected)
                     new_paths = self._hybrid_schema_search(corrected)
@@ -3373,13 +3377,18 @@ Output:
                 return None
 
         if n > 1:
-            # 複数候補生成: temperature > 0 で N 個生成し、スキーマ整合スコアで選択
+            # 複数候補生成: temperature > 0 で N 個生成し、構造スコアで選択
             candidates: List[Tuple[KoPLOperation, float]] = []
             for i in range(n):
                 kopl = self._invoke_and_parse_kopl(
                     prompt, entity_name, temperature=0.7
                 )
                 if kopl:
+                    # 各候補を anchor 起点に正規化してからスコア計算する。
+                    # これにより chain connectivity の信号が LLM 出力の
+                    # canonical 方向バイアスに左右されない
+                    if entity_name and self.anchor_reorient:
+                        self._reorient_relations_from_anchor(kopl, entity_name)
                     score = self._score_schema_compatibility(kopl)
                     candidates.append((kopl, score))
 
@@ -3398,16 +3407,44 @@ Output:
         return best
 
     def _score_schema_compatibility(self, kopl: KoPLOperation) -> float:
-        """KoPLプログラムのスキーマ整合スコアを計算
+        """KoPLプログラムの構造スコアを計算 (0.0 - 1.0)。
 
-        各型ペアにスキーマ上のエッジが存在する割合を返す (0.0 - 1.0)。
+        ``self.enhanced_scoring`` が ``False`` の場合、従来の schema-validity
+        のみを返す (plain scoring)。``True`` の場合は以下の 3 シグナルを
+        重み付け合成する:
+
+        1. **Schema validity** (weight 0.5):
+           各 (src_type, tgt_type) ペアにスキーマ上のエッジが存在する割合
+        2. **Chain connectivity** (weight 0.3):
+           連続する relation が ``prev.tgt_type == next.src_type`` を満たす割合。
+           LLM の正準方向出力が混ざっていると chain が途切れ、Phase 2 の
+           BFS で余計な中間型が挿入されて 3-hop 迂回の原因になる
+        3. **Answer type alignment** (weight 0.2):
+           ``kopl.answer_type`` がスキーマ型であれば、最終 relation の
+           ``tgt_type`` が一致するかを加点する。ミスマッチは 0.5 倍
+
+        構造スコアの高い候補を選ぶことで、multi-candidate 生成時に
+        「正しい hop 数 / 正しい answer 型」の候補を優先的に採用できる。
         """
         operations = kopl.children if kopl.children else [kopl]
+
+        # 1. Schema validity
         total_pairs = 0
         valid_pairs = 0
+        # 2. Chain connectivity (intra-operation only; children are independent)
+        chain_total = 0
+        chain_threaded = 0
+        # 3. Answer-type alignment: each op's final hop should land at answer_type
+        answer_type = getattr(kopl, "answer_type", "entity") or "entity"
+        check_ans_type = (
+            answer_type != "entity"
+            and answer_type in self.schema.types
+        )
+        ans_aligned = True
 
         for op in operations:
-            for rel in op.relations:
+            rels = op.relations
+            for rel in rels:
                 if not rel.src_type or not rel.tgt_type:
                     continue
                 total_pairs += 1
@@ -3417,9 +3454,27 @@ Output:
                 if available:
                     valid_pairs += 1
 
+            for i in range(len(rels) - 1):
+                chain_total += 1
+                if rels[i].tgt_type and rels[i].tgt_type == rels[i + 1].src_type:
+                    chain_threaded += 1
+
+            if check_ans_type and rels:
+                final_rel = rels[-1]
+                if final_rel.tgt_type and final_rel.tgt_type != answer_type:
+                    ans_aligned = False
+
         if total_pairs == 0:
             return 0.0
-        return valid_pairs / total_pairs
+
+        schema_score = valid_pairs / total_pairs
+        if not getattr(self, "enhanced_scoring", True):
+            return schema_score
+
+        chain_score = chain_threaded / chain_total if chain_total > 0 else 1.0
+        ans_score = 1.0 if ans_aligned else 0.5
+
+        return schema_score * 0.5 + chain_score * 0.3 + ans_score * 0.2
 
     # ─── Phase 1→2 Correction (Feature B) ────────────
 
@@ -3718,12 +3773,22 @@ Return a JSON object with operations array, final_operation, and optionally filt
         from langchain.chat_models import init_chat_model
 
         if temperature > 0:
-            llm = init_chat_model(
-                self.llm.model_name if hasattr(self.llm, 'model_name') else self.llm.model,
-                model_provider="openai",
-                temperature=temperature,
-                max_tokens=8192,
+            # 新しい LLM インスタンスを作る際、元の LLM から model / api_base
+            # を引き継ぐ。これを怠ると LiteLLM proxy 越しのローカルモデルで
+            # "invalid model ID" エラーになる
+            model_name = (
+                self.llm.model_name if hasattr(self.llm, 'model_name') else self.llm.model
             )
+            init_kwargs = {
+                "model_provider": "openai",
+                "temperature": temperature,
+                "max_tokens": 8192,
+            }
+            api_base = os.getenv("LLM_API_BASE", "") or LLM_API_BASE or None
+            if api_base:
+                init_kwargs["base_url"] = api_base
+                init_kwargs["api_key"] = "sk-local"
+            llm = init_chat_model(model_name, **init_kwargs)
             llm_with_output = llm.with_structured_output(AtomicKoPLProgramSchema)
         else:
             llm_with_output = self.llm.with_structured_output(AtomicKoPLProgramSchema)
