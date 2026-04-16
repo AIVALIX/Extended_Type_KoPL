@@ -1,0 +1,34 @@
+% Ablation Table — full 7 configs on all 3 KGs with gpt-4.1-mini
+% Paper target: IJCKG 2026
+% Data source: docs/ablation_report_20260414.md (2026-04-15 re-measurement)
+%
+% A: vanilla                                      --no-anchor-reorient --max-correction-rounds 0
+% B: +Fix A                                        --max-correction-rounds 0
+% C: +correction (baseline)                        --max-correction-rounds 1
+% D: +n_kopl=3 (plain scoring)                     --n-kopl-candidates 3 --plain-scoring
+% E: -reranker                                     --reranker none --max-correction-rounds 1
+% F: +CIR                                          --cypher-informed-rerank --max-correction-rounds 1
+% G: +n_kopl=3 (enhanced scoring)                  --n-kopl-candidates 3 (default enhanced)
+%
+\begin{table*}[t]
+\centering
+\small
+\caption{Full ablation of ETK components on MetaQA, PrimeKGQA, and PcQA using \texttt{gpt-4.1-mini} ($n=100$, seed\,42, $\mathrm{workers}=4$). Bold marks the cell with the largest absolute gain over $C$ within a subset; dashes denote cells within the $\pm 1$\,pt noise band of $C$. MetaQA is near-saturated across all configurations; the main ablation signal lives in PrimeKGQA.}
+\label{tab:ablation_gpt41mini}
+\begin{tabular}{l ccc cccc c}
+\toprule
+ & \multicolumn{3}{c}{\textbf{MetaQA}} & \multicolumn{4}{c}{\textbf{PrimeKGQA}} & \textbf{PcQA} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-8}\cmidrule(lr){9-9}
+Config & 1-hop & 2-hop & 3-hop & 1-hop & 2-hop & 2-int & 3-int & \textit{all} \\
+\midrule
+$A$: vanilla                 & 100 & 99 & 100 & 83 & 71 & 96 & 98 & 68 \\
+$B$: $+$Fix A                & 100 & 99 & 99  & 83 & 77 & 95 & 98 & 70 \\
+$C$: $+$correction (baseline) & 100 & 99 & 98  & 84 & 77 & 97 & 99 & \textbf{70} \\
+\midrule
+$D$: $+$n\_kopl{=}3 plain     & 100 & 99 & 100 & 84 & 77 & 94 & 99 & 69 \\
+$E$: $-$reranker             & 100 & 98 & 100 & \textbf{97} & 78 & 95 & 98 & 68 \\
+$F$: $+$CIR                  & 100 & 99 & 100 & \textbf{92} & 78 & 98 & 99 & 68 \\
+$G$: $+$n\_kopl{=}3 enhanced  & 100 & 99 & 99  & 84 & 78 & 95 & 98 & 66 \\
+\bottomrule
+\end{tabular}
+\end{table*}

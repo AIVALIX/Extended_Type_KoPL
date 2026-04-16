@@ -1,0 +1,34 @@
+% Contribution matrix — Δ accuracy of each ETK component vs C baseline,
+% broken down by (LLM × KG × subset).
+% Highlights where each contribution is actually useful.
+%
+\begin{table}[t]
+\centering
+\small
+\caption{Contribution matrix: absolute accuracy change ($\Delta$) of each ETK component relative to the $C$ baseline, reported per (LLM, KG subset). Cells marked "$\sim$" are within $\pm 1$\,pt noise. $\dagger$ indicates a drop caused by pipeline-level executor errors (see Table~\ref{tab:ablation_gemma3}). Fix\,A's value peaks at gemma3 MetaQA 2-hop, confirming its role as a weak-LLM rescue mechanism. CIR and $-$reranker are strongest on PrimeKGQA one-hop with the cloud LLM. With the local LLM, CIR is neutral (not destructive --- initial timeout errors were infrastructure artifacts, see Table~\ref{tab:ablation_gemma3}).}
+\label{tab:contribution_matrix}
+\begin{tabular}{l l r r}
+\toprule
+Component & Comparison & gpt-4.1-mini & gemma3:27b \\
+\midrule
+\multicolumn{4}{l}{\textit{MetaQA}} \\
+\quad Fix A                  & $A\to B$, 2-hop       & $\sim$       & $\mathbf{+12}$ \\
+\quad correction             & $B\to C$, 2-hop       & $\sim$       & $-1$ \\
+\quad $-$reranker            & $C\to E$, 2-hop       & $-1$         & $\sim$ \\
+\quad $+$CIR                 & $C\to F$, 2-hop       & $\sim$       & $-1$ \\
+\midrule
+\multicolumn{4}{l}{\textit{PrimeKGQA}} \\
+\quad Fix A                  & $A\to B$, 2-hop       & $+6$         & $\sim$ \\
+\quad correction             & $B\to C$, 2-hop       & $\sim$       & $+2$ \\
+\quad correction             & $B\to C$, 2-int       & $+2$         & $\sim$ \\
+\quad $-$reranker            & $C\to E$, 1-hop       & $\mathbf{+13}$ & $+4$ \\
+\quad $+$CIR                 & $C\to F$, 1-hop       & $\mathbf{+8}$  & $+1$ \\
+\quad $+$CIR                 & $C\to F$, 2-int       & $\sim$       & $+2$ \\
+\midrule
+\multicolumn{4}{l}{\textit{PcQA}} \\
+\quad Fix A                  & $A\to B$              & $+2$         & $\sim$ \\
+\quad $-$reranker            & $C\to E$              & $-2$         & $-4^\dagger$ \\
+\quad $+$CIR$^*$             & $C\to F$              & $-2$         & $\sim$ \\
+\bottomrule
+\end{tabular}
+\end{table}
