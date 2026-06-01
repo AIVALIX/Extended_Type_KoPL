@@ -1,0 +1,1235 @@
+{
+  "28": {
+    "question": "What cancers are associated with the ZNFN1A3?",
+    "answer": "Output: ZNFN1A3 is associated with the following cancers: chronic lymphocytic leukemia/small lymphocytic lymphoma.",
+    "found": [
+      "acute myeloid leukemia",
+      "small cell lung cancer",
+      "chronic myelogenous leukemia",
+      "chronic lymphocytic leukemia/small lymphocytic lymphoma (cllsll)"
+    ],
+    "missing": [
+      "lymphoma.",
+      "following"
+    ]
+  },
+  "35": {
+    "question": "Which drugs are EGFR in pleomorphic carcinoma of the lung resistant to?",
+    "answer": "Output: EGFR in pleomorphic carcinoma of the lung is resistant to osi-ertinib.",
+    "found": [],
+    "missing": [
+      "osi-ertinib."
+    ]
+  },
+  "36": {
+    "question": "Which drugs are colon adenocarcinoma with NTRK1 resistant to?",
+    "answer": "Output: NTRK1-colon adenocarcinoma are resistant to encorafenib.",
+    "found": [
+      "ntrk1"
+    ],
+    "missing": [
+      "encorafenib."
+    ]
+  },
+  "54": {
+    "question": "What types of cancer can be treated with bexarotene?",
+    "answer": "Output: Bexarotene can be used to treat T cell leukemia/lymphoma.",
+    "found": [
+      "acute myeloid leukemia"
+    ],
+    "missing": [
+      "cell",
+      "used",
+      "lymphoma."
+    ]
+  },
+  "64": {
+    "question": "What diseases are caused by cancers with AIRE mutations?",
+    "answer": "Output: AIRE can cause autoimmune polyendocrine syndrome, candidiasis, and ectodermal dysplasia.",
+    "found": [
+      "androgen insensitivity syndrome"
+    ],
+    "missing": [
+      "autoimmune",
+      "candidiasis",
+      "dysplasia.",
+      "polyendocrine",
+      "ectodermal"
+    ]
+  },
+  "74": {
+    "question": "What type of cancer can be induced by Trismus-Pseudocamptodactyly Syndrome with Cardiac Myxoma and Freckling?",
+    "answer": "Output: Trismus-Pseudocamptodactyly Syndrome with Cardiac Myxoma and Freckling can induce heart muscle tumors.",
+    "found": [
+      "ar"
+    ],
+    "missing": [
+      "muscle",
+      "tumors."
+    ]
+  },
+  "107": {
+    "question": "What are the NMPA-approved drugs for cancers with IDH1 mutation?",
+    "answer": "Output: The NMPA-approved drugs for cancers with IDH1 mutation is avonib.",
+    "found": [],
+    "missing": [
+      "avonib."
+    ]
+  },
+  "110": {
+    "question": "What genetic diseases can be caused by cancers with AR mutations?",
+    "answer": "Output: AR mutations can cause the following genetic diseases: X-linked hypogonadism, Klinefelter syndrome, and Turner syndrome.",
+    "found": [
+      "x-linked lymphoproliferative syndrome",
+      "androgen insensitivity syndrome"
+    ],
+    "missing": [
+      "Klinefelter",
+      "Turner",
+      "hypogonadism",
+      "syndrome.",
+      "following"
+    ]
+  },
+  "112": {
+    "question": "What genetic diseases may be caused by cancers with SLC37A4?",
+    "answer": "Output: SLC37A4 may cause Type IB glycogen storage.",
+    "found": [
+      "glycogen storage disease"
+    ],
+    "missing": [
+      "Type",
+      "storage."
+    ]
+  },
+  "130": {
+    "question": "Which drugs are ERBB2-p.D769Y resistance to?",
+    "answer": "Output: ERBB2-p.D769Y is resistance to Nalatinib.",
+    "found": [],
+    "missing": [
+      "Nalatinib."
+    ]
+  },
+  "133": {
+    "question": "Which drugs are cancers with NTRK3-p.G623R resistant to?",
+    "answer": "Output: NTRK3-p.G623R is resistant to encorafenib.",
+    "found": [],
+    "missing": [
+      "encorafenib."
+    ]
+  },
+  "141": {
+    "question": "What types of cancer can ponatinib be used to treat?",
+    "answer": "Output: Ponatinib can be used to treat acute lymphoblastic leukemia, chronic lymphocytic leukemia, and chronic myeloid leukemia.",
+    "found": [
+      "t-lymphoblastic leukemia/lymphoma",
+      "acute myeloid leukemia",
+      "chronic myelogenous leukemia",
+      "chronic lymphocytic leukemia/small lymphocytic lymphoma (cllsll)"
+    ],
+    "missing": [
+      "leukemia."
+    ]
+  },
+  "145": {
+    "question": "What is the relationship between NRAS and the RO5126766?",
+    "answer": "Output: The relationship between NRAS and RO5126766 is that RO5126766 inhibits the activation of NRAS.",
+    "found": [
+      "nras"
+    ],
+    "missing": [
+      "activation",
+      "inhibits"
+    ]
+  },
+  "146": {
+    "question": "What is the relationship between ALK and the crizotinib?",
+    "answer": "Output: ALK is inhibited by crizotinib.",
+    "found": [
+      "crizotinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "148": {
+    "question": "What is the relationship between RET and the selpercatinib?",
+    "answer": "Output: RET is inhibited by selpercatinib.",
+    "found": [
+      "selpercatinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "153": {
+    "question": "What is the relationship between ERBB2 and the A166?",
+    "answer": "Output: A166 can inhibit to ERBB2.",
+    "found": [
+      "erbb2"
+    ],
+    "missing": [
+      "inhibit"
+    ]
+  },
+  "155": {
+    "question": "What is the relationship between PDGFRA and the dasatinib?",
+    "answer": "Output: Dasatinib is an inhibitor of PDGFRA.",
+    "found": [
+      "pdgfra"
+    ],
+    "missing": [
+      "inhibitor"
+    ]
+  },
+  "156": {
+    "question": "How does EGFR gene mutation affect the efficacy of gefitinib?",
+    "answer": "Output: Gefitinib is effective against EGFR gene mutation.",
+    "found": [],
+    "missing": [
+      "mutation.",
+      "against",
+      "effective"
+    ]
+  },
+  "158": {
+    "question": "What is the relationship between MET and the cabozantinib?",
+    "answer": "Output: MET is inhibited by cabozantinib.",
+    "found": [
+      "cabozantinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "168": {
+    "question": "Which types of cancer can be driven by cancers with E3B1 mutations?",
+    "answer": "Output: E3B1 can drive esophageal cancer.",
+    "found": [
+      "esophageal adenocarcinoma",
+      "cancer"
+    ],
+    "missing": []
+  },
+  "174": {
+    "question": "What is the relationship between KRAS and the RG6330?",
+    "answer": "Output: KRAS is the inhibitor of RG6330.",
+    "found": [
+      "rg6330"
+    ],
+    "missing": [
+      "inhibitor"
+    ]
+  },
+  "177": {
+    "question": "What is the relationship between BRAF gene mutation and the therapeutic effect of PLX8394?",
+    "answer": "Output: BRAF gene mutation is inhibited by PLX8394.",
+    "found": [
+      "plx8394"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "180": {
+    "question": "How does EGFR affect the efficacy of panitumumab?",
+    "answer": "Output: Panitumumab is inhibited by EGFR.",
+    "found": [
+      "egfr"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "181": {
+    "question": "What is the relationship between ERBB2 and the efficacy of trastuzumab?",
+    "answer": "Output: Trastuzumab is an inhibitor of ERBB2.",
+    "found": [
+      "erbb2"
+    ],
+    "missing": [
+      "inhibitor"
+    ]
+  },
+  "182": {
+    "question": "What is the relationship between MET and the efficacy of crizotinib?",
+    "answer": "Output: MET is inhibited by crizotinib.",
+    "found": [
+      "crizotinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "183": {
+    "question": "What is the relationship between ERBB2 and the dacomitinib?",
+    "answer": "Output: dacomitinib is an inhibitor of ERBB2.",
+    "found": [
+      "erbb2"
+    ],
+    "missing": [
+      "inhibitor"
+    ]
+  },
+  "185": {
+    "question": "How does EGFR gene mutation affect the efficacy of osimertinib?",
+    "answer": "Output: The inhibition of EGFR gene mutation by osimertinib is highly effective with a score of 10.",
+    "found": [],
+    "missing": [
+      "inhibition",
+      "highly",
+      "score",
+      "effective"
+    ]
+  },
+  "187": {
+    "question": "What is the relationship between FGFR1 and the nintedanib?",
+    "answer": "Output: FGFR1 is inhibited by nintedanib.",
+    "found": [
+      "nintedanib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "189": {
+    "question": "What is the relationship between ERBB2 and the sapitinib?",
+    "answer": "Output: Sapitinib is an inhibitor of ERBB2.",
+    "found": [
+      "erbb2"
+    ],
+    "missing": [
+      "inhibitor"
+    ]
+  },
+  "190": {
+    "question": "How does FLT3 affect the effectiveness of lestaurtinib?",
+    "answer": "Output: Lestaurtinib is inhibited by FLT3.",
+    "found": [
+      "flt3"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "191": {
+    "question": "What is the relationship between MET gene mutation and the efficacy of merestinib?",
+    "answer": "Output: MET gene mutation is inhibited by merestinib.",
+    "found": [
+      "merestinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "201": {
+    "question": "How does ALK affect the efficacy of lorlatinib?",
+    "answer": "Output: Lorlatinib is inhibited by ALK.",
+    "found": [],
+    "missing": [
+      "inhibited",
+      "ALK."
+    ]
+  },
+  "205": {
+    "question": "What is the relationship between Familial Cerebral Cavernous Angioma and hemangioma?",
+    "answer": "Output: Familial Cerebral Cavernous Angioma is a type of hemangioma.",
+    "found": [],
+    "missing": [
+      "hemangioma.",
+      "type"
+    ]
+  },
+  "206": {
+    "question": "What is the relationship between NSD1 and Weaver syndrome?",
+    "answer": "Output: NSD1 is a gene that causes Weaver syndrome.",
+    "found": [],
+    "missing": [
+      "gene",
+      "causes",
+      "syndrome."
+    ]
+  },
+  "210": {
+    "question": "What class of drug does AT9283 belong to?",
+    "answer": "Output: AT9283 belongs to the class of immunotherapy drugs.",
+    "found": [],
+    "missing": [
+      "immunotherapy",
+      "belongs",
+      "drugs."
+    ]
+  },
+  "211": {
+    "question": "What type of drug does AZD3463 belong to?",
+    "answer": "Output: AZD3463 belongs to the class of targeted therapy drugs.",
+    "found": [
+      "ar"
+    ],
+    "missing": [
+      "class",
+      "therapy",
+      "belongs",
+      "drugs."
+    ]
+  },
+  "212": {
+    "question": "What class of drug does altretamine belong to?",
+    "answer": "Output: Altretamine belongs to the class of drug called ACE inhibitors.",
+    "found": [],
+    "missing": [
+      "called",
+      "inhibitors.",
+      "belongs"
+    ]
+  },
+  "213": {
+    "question": "What category of drug does abiraterone belong to?",
+    "answer": "Output: Abiraterone belongs to the category of androgen receptor antagonist.",
+    "found": [
+      "androgen insensitivity syndrome"
+    ],
+    "missing": [
+      "antagonist.",
+      "receptor",
+      "belongs"
+    ]
+  },
+  "225": {
+    "question": "What is the relationship between EGFR and ramucirumab?",
+    "answer": "Output: EGFR is inhibited by ramucirumab.",
+    "found": [
+      "ramucirumab"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "230": {
+    "question": "How does a RET gene mutation affect the efficacy of selpercatinib?",
+    "answer": "Output: Selpercatinib is inhibited by RET gene mutation.",
+    "found": [],
+    "missing": [
+      "mutation.",
+      "inhibited"
+    ]
+  },
+  "235": {
+    "question": "How does FGFR1 affect the efficacy of ponatinib?",
+    "answer": "Output: FGFR1 inhibits the efficacy of ponatinib.",
+    "found": [
+      "ponatinib"
+    ],
+    "missing": [
+      "inhibits"
+    ]
+  },
+  "238": {
+    "question": "How does EWSR1 affect the efficacy of seclidemstat?",
+    "answer": "Output: EWSR1 is a negative regulator of seclidemstat.",
+    "found": [
+      "breast cancer(triple negative)"
+    ],
+    "missing": [
+      "regulator",
+      "seclidemstat."
+    ]
+  },
+  "241": {
+    "question": "How does EGFR gene mutation affect the efficacy of amivantamab-vmjw?",
+    "answer": "Output: EGFR gene mutation can affect the efficacy of amivantamab-vmjw.",
+    "found": [
+      "amivantamab-vmjw"
+    ],
+    "missing": []
+  },
+  "243": {
+    "question": "How does RET gene mutation affect the efficacy of vandetanib?",
+    "answer": "Output: Vandetanib is inhibited by RET gene mutation.",
+    "found": [],
+    "missing": [
+      "mutation.",
+      "inhibited"
+    ]
+  },
+  "247": {
+    "question": "What is the relationship between BRCA1 gene mutation and olaparib?",
+    "answer": "Output: Olaparib is a BRCA1 gene mutation inhibitor.",
+    "found": [],
+    "missing": [
+      "inhibitor."
+    ]
+  },
+  "248": {
+    "question": "What is the relationship between the ALK and the crizotinib?",
+    "answer": "Output: ALK is inhibited by crizotinib.",
+    "found": [
+      "crizotinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "249": {
+    "question": "What is the relationship between HRAS and the efficacy of selumetinib?",
+    "answer": "Output: Selumetinib inhibits the activity of HRAS.",
+    "found": [
+      "hras"
+    ],
+    "missing": [
+      "activity",
+      "inhibits"
+    ]
+  },
+  "255": {
+    "question": "How does the BRCA2 affect the efficacy of talazoparib?",
+    "answer": "Output: Talazoparib is inhibited by BRCA2.",
+    "found": [
+      "brca2"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "256": {
+    "question": "What is the relationship between EGFR and anlotinib?",
+    "answer": "Output: EGFR is inhibited by anlotinib.",
+    "found": [
+      "anlotinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "259": {
+    "question": "Which genetic mutations are related to possible resistance to dabrafenib?",
+    "answer": "Output: The following genetic mutations are related to possible resistance to dabrafenib: BRAF-p.L514V, BRAF-p.K601E.",
+    "found": [
+      "braf"
+    ],
+    "missing": [
+      "following"
+    ]
+  },
+  "262": {
+    "question": "How does the ROS1 affect the efficacy of crizotinib?",
+    "answer": "Output: Crizotinib is inhibited by ROS1.",
+    "found": [
+      "ros1"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "264": {
+    "question": "What is the relationship between EGFR and the icotinib?",
+    "answer": "Output: EGFR is inhibited by icotinib.",
+    "found": [
+      "icotinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "265": {
+    "question": "What is the relationship between BRAF and the efficacy of vemurafenib?",
+    "answer": "Output: BRAF is inhibited by vemurafenib.",
+    "found": [
+      "vemurafenib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "268": {
+    "question": "How does FGFR1 affect the efficacy of pazopanib?",
+    "answer": "Output: Pazopanib is inhibited by FGFR1.",
+    "found": [
+      "fgfr1"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "269": {
+    "question": "How does EGFR affect the efficacy of gefitinib?",
+    "answer": "Output: Gefitinib is inhibited by EGFR.",
+    "found": [
+      "egfr"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "270": {
+    "question": "What is the relationship between BRAF and sorafenib?",
+    "answer": "Output: BRAF is driving to sorafenib.",
+    "found": [
+      "sorafenib"
+    ],
+    "missing": [
+      "driving"
+    ]
+  },
+  "271": {
+    "question": "How does a mutation in the BRCA1 gene affect the efficacy of talazoparib?",
+    "answer": "Output: The mutation in the BRCA1 gene affects the efficacy of talazoparib.",
+    "found": [
+      "ar"
+    ],
+    "missing": [
+      "affects"
+    ]
+  },
+  "273": {
+    "question": "How does KIT affect the effectiveness of imatinib?",
+    "answer": "Output: KIT inhibits the effectiveness of imatinib.",
+    "found": [
+      "imatinib"
+    ],
+    "missing": [
+      "inhibits"
+    ]
+  },
+  "275": {
+    "question": "What is the relationship between KIT and the effectiveness of imatinib?",
+    "answer": "Output: KIT is inhibited by imatinib.",
+    "found": [
+      "imatinib"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "276": {
+    "question": "How does the ALK affect the efficacy of lorlatinib?",
+    "answer": "Output: Lorlatinib is inhibited by ALK.",
+    "found": [],
+    "missing": [
+      "inhibited",
+      "ALK."
+    ]
+  },
+  "278": {
+    "question": "How does BRAF affect the effectiveness of dabrafenib?",
+    "answer": "Output: Dabrafenib is inhibited by BRAF.",
+    "found": [
+      "braf"
+    ],
+    "missing": [
+      "inhibited"
+    ]
+  },
+  "281": {
+    "question": "How does MET affect the efficacy of capmatinib?",
+    "answer": "Output: Capmatinib inhibits the efficacy of MET.",
+    "found": [],
+    "missing": [
+      "MET.",
+      "inhibits"
+    ]
+  },
+  "283": {
+    "question": "How does EGFR affect the efficacy of rociletinib?",
+    "answer": "Output: Rociletinib is an EGFR inhibitor, and it can improve the efficacy of EGFR.",
+    "found": [
+      "egfr"
+    ],
+    "missing": [
+      "inhibitor",
+      "improve"
+    ]
+  },
+  "284": {
+    "question": "How does a PDGFRA affect the efficacy of imatinib?",
+    "answer": "Output: PDGFRA inhibits the efficacy of imatinib.",
+    "found": [
+      "imatinib"
+    ],
+    "missing": [
+      "inhibits"
+    ]
+  },
+  "289": {
+    "question": "How does EGFR gene mutation affect the efficacy of osimertinib?",
+    "answer": "Output: Osimertinib is effective against EGFR gene mutation.",
+    "found": [],
+    "missing": [
+      "mutation.",
+      "against",
+      "effective"
+    ]
+  },
+  "290": {
+    "question": "How does EGFR gene mutation affect the efficacy of afatinib?",
+    "answer": "Output: EGFR gene mutation affects the efficacy of afatinib.",
+    "found": [
+      "afatinib"
+    ],
+    "missing": [
+      "affects"
+    ]
+  },
+  "292": {
+    "question": "How does BRAF affect the vemurafenib?",
+    "answer": "Output: BRAF inhibits the vemurafenib.",
+    "found": [
+      "vemurafenib"
+    ],
+    "missing": [
+      "inhibits"
+    ]
+  },
+  "294": {
+    "question": "How does the BRAF gene mutation affect the therapeutic effect of trametinib?",
+    "answer": "Output: The BRAF gene mutation can inhibit the therapeutic effect of trametinib.",
+    "found": [
+      "trametinib"
+    ],
+    "missing": [
+      "inhibit"
+    ]
+  },
+  "295": {
+    "question": "How does the MET gene mutation affect the efficacy of tepotinib?",
+    "answer": "Output: The MET gene mutation can inhibit the efficacy of tepotinib.",
+    "found": [
+      "tepotinib"
+    ],
+    "missing": [
+      "inhibit"
+    ]
+  },
+  "296": {
+    "question": "How would you describe hepatobiliary tumor?",
+    "answer": "Output: Hepatobiliary tumor is a tumor that affects the liver, gallbladder, or bile ducts.",
+    "found": [
+      "liver cancer",
+      "small cell gallbladder cancer"
+    ],
+    "missing": [
+      "affects",
+      "bile",
+      "ducts."
+    ]
+  },
+  "297": {
+    "question": "How would you describe SC Phocomelia syndrome?",
+    "answer": "Output: SC Phocomelia syndrome is a rare genetic disorder that affects the development of the limbs and face, and is characterized by limb deformities and facial abnormalities.",
+    "found": [
+      "ar"
+    ],
+    "missing": [
+      "genetic",
+      "disorder",
+      "facial",
+      "limbs",
+      "limb"
+    ]
+  },
+  "298": {
+    "question": "How would you describe Schwannomatosis?",
+    "answer": "Output: Schwannomatosis is a rare genetic disorder that affects the nervous system, characterized by multiple benign tumors in the skin, central nervous system tumors, and neurological abnormalities.",
+    "found": [
+      "steatocystoma multiplex",
+      "ar",
+      "chest wall tumors"
+    ],
+    "missing": [
+      "genetic",
+      "nervous",
+      "disorder",
+      "benign",
+      "skin"
+    ]
+  },
+  "299": {
+    "question": "How would you describe Hereditary Desmoid Disease?",
+    "answer": "Output: Hereditary Desmoid Disease is a rare genetic disorder that affects the gastrointestinal tract and is characterized by the presence of benign tumors.",
+    "found": [
+      "ar",
+      "gastrointestinal stromal tumor"
+    ],
+    "missing": [
+      "genetic",
+      "tumors.",
+      "disorder",
+      "tract",
+      "benign"
+    ]
+  },
+  "300": {
+    "question": "How would you describe Galactosemia?",
+    "answer": "Output: Galactosemia is a rare genetic disorder that affects the body's ability to break down the sugar called galactose.",
+    "found": [
+      "ar"
+    ],
+    "missing": [
+      "genetic",
+      "galactose.",
+      "disorder",
+      "ability",
+      "break"
+    ]
+  },
+  "301": {
+    "question": "How would you describe ezatiostat?",
+    "answer": "Output: Ezatiostat is a GST P1-1 inhibitor that activates Jun and MAPK pathways and promotes cell proliferation and differentiation.",
+    "found": [],
+    "missing": [
+      "proliferation",
+      "differentiation.",
+      "MAPK",
+      "inhibitor",
+      "P1-1"
+    ]
+  },
+  "303": {
+    "question": "How would you describe durvalumab?",
+    "answer": "Output: Durvalumab is a human immunoglobulin G1κ (IgG1κ) single-chain variable fragment (scFv) antibody that can bind to PD-L1 and inhibit its interaction with PD-1 and CD80, thereby suppressing the activation of T cells and enhancing the activity of T cells.",
+    "found": [
+      "ar",
+      "her2 car-t cells"
+    ],
+    "missing": [
+      "interaction",
+      "PD-1",
+      "human",
+      "immunoglobulin",
+      "fragment"
+    ]
+  },
+  "305": {
+    "question": "How would you describe gandotinib?",
+    "answer": "Output: Gandotinib is a JAK2 V617F inhibitor that can selectively inhibit JAK2 V617F-mediated activation and induce JAK2 V617F-dependent cell death in cancer cells.",
+    "found": [
+      "jak2-p.v617f-肺癌",
+      "cancer"
+    ],
+    "missing": [
+      "death",
+      "selectively",
+      "inhibitor",
+      "V617F-dependent",
+      "cell"
+    ]
+  },
+  "306": {
+    "question": "How would you describe fentanyl?",
+    "answer": "Output: Fentanyl is a potent and fast-acting analgesic that is used to treat severe pain. It is a synthetic opioid that works by blocking the action of the body's natural pain-relieving chemicals. It is available in both oral and injectable forms.",
+    "found": [],
+    "missing": [
+      "action",
+      "both",
+      "synthetic",
+      "treat",
+      "used"
+    ]
+  },
+  "307": {
+    "question": "How would you describe intestinal ampullary carcinoma?",
+    "answer": "Output: Intestinal ampullary carcinoma is a type of cancer that develops in the intestine, usually in the ampulla of the colon. It is a rare type of cancer that can be difficult to diagnose.",
+    "found": [
+      "cancer"
+    ],
+    "missing": [
+      "develops",
+      "usually",
+      "type",
+      "colon.",
+      "diagnose."
+    ]
+  },
+  "308": {
+    "question": "How would you describe adrenal gland?",
+    "answer": "Output: The adrenal gland is an endocrine gland located adjacent to the kidney in mammals, consisting of the outer adrenal cortex and the inner adrenal medulla. Malignant diseases that occur in the adrenal gland are referred to as adrenal gland cancer or adrenal cortical carcinoma.",
+    "found": [
+      "ar",
+      "pancreatic neuroendocrine tumor",
+      "cancer",
+      "polycystic kidney disease 1",
+      "adrenocortical carcinoma",
+      "malignant tumor"
+    ],
+    "missing": [
+      "referred",
+      "cortex",
+      "occur",
+      "medulla.",
+      "adjacent"
+    ]
+  },
+  "318": {
+    "question": "What kind of cancer can be driven by H3F3A?",
+    "answer": "Output: H3F3A can drive high-grade epithelial tumors, non-specific.",
+    "found": [
+      "chest wall tumors",
+      "ovarian epithelial tumor",
+      "high-grade glioma"
+    ],
+    "missing": [
+      "non-specific."
+    ]
+  },
+  "326": {
+    "question": "What kind of cancer could Schwannomatosis eventually develop to?",
+    "answer": "Output: Schwannomatosis could eventually develop to the following types of cancer: Schwannoma, and Neurofibroma.",
+    "found": [],
+    "missing": [
+      "types",
+      "Neurofibroma.",
+      "following"
+    ]
+  },
+  "331": {
+    "question": "What cancer will RAPADILINO syndrome develop into?",
+    "answer": "Output: RAPADILINO syndrome will develop into bone cancer and blood tumors.",
+    "found": [],
+    "missing": [
+      "blood",
+      "tumors.",
+      "bone"
+    ]
+  },
+  "332": {
+    "question": "What cancer will Baller-Gerold syndrome develop into?",
+    "answer": "Output: Baller-Gerold syndrome will develop into lymphoma.",
+    "found": [],
+    "missing": [
+      "lymphoma."
+    ]
+  },
+  "333": {
+    "question": "What is the relationship between Steatocystoma Multiplex and sebaceous carcinoma?",
+    "answer": "Output: Steatocystoma multiplex is a type of sebaceous carcinoma.",
+    "found": [
+      "ar"
+    ],
+    "missing": [
+      "type"
+    ]
+  },
+  "334": {
+    "question": "What is the relationship between Hereditary Diffuse Gastric Cancer and gastric cancer?",
+    "answer": "Output: Hereditary Diffuse Gastric Cancer is a type of gastric cancer.",
+    "found": [
+      "cancer"
+    ],
+    "missing": [
+      "type"
+    ]
+  },
+  "335": {
+    "question": "What is the relationship between Ataxia Telangiectasia and ATM?",
+    "answer": "Output: Ataxia Telangiectasia is a cause of ATM.",
+    "found": [],
+    "missing": [
+      "cause",
+      "ATM."
+    ]
+  },
+  "336": {
+    "question": "What is the relationship between Macrocephaly-Cutis Marmorata syndrome and PIK3CA?",
+    "answer": "Output: Macrocephaly-Cutis Marmorata syndrome is caused by PIK3CA.",
+    "found": [
+      "pik3ca"
+    ],
+    "missing": [
+      "caused"
+    ]
+  },
+  "337": {
+    "question": "What is the relationship between Hereditary Desmoid Disease and APC?",
+    "answer": "Output: Hereditary Desmoid Disease is caused by APC.",
+    "found": [],
+    "missing": [
+      "caused",
+      "APC."
+    ]
+  },
+  "338": {
+    "question": "What is the relationship between Juvenile Polyposis and BMPR1A?",
+    "answer": "Output: Juvenile polyposis is caused by BMPR1A.",
+    "found": [
+      "bmpr1a"
+    ],
+    "missing": [
+      "caused"
+    ]
+  },
+  "339": {
+    "question": "What is the relationship between Mosaic Variegated Aneuploidy Syndrome and BUB1B?",
+    "answer": "Output: Mosaic Variegated Aneuploidy Syndrome is caused by BUB1B.",
+    "found": [
+      "bub1b"
+    ],
+    "missing": [
+      "caused"
+    ]
+  },
+  "340": {
+    "question": "What is the relationship between Beckwith-Wiedemann syndrome and CDKN1C?",
+    "answer": "Output: Beckwith-Wiedemann syndrome is caused by CDKN1C.",
+    "found": [
+      "cdkn1c"
+    ],
+    "missing": [
+      "caused"
+    ]
+  },
+  "342": {
+    "question": "What diseases can MTAP gene mutation lead to?",
+    "answer": "Output: MTAP gene mutation can lead to the following diseases: osteogenesis imperfecta.",
+    "found": [],
+    "missing": [
+      "osteogenesis",
+      "imperfecta.",
+      "following"
+    ]
+  },
+  "350": {
+    "question": "What diseases can DICER1 lead to?",
+    "answer": "Output: DICER1 can lead to DICER1 syndrome.",
+    "found": [],
+    "missing": [
+      "syndrome."
+    ]
+  },
+  "353": {
+    "question": "What is the relationship between breast and CDH1?",
+    "answer": "Output: Breast is a gene that is associated with CDH1.",
+    "found": [
+      "palb2-associated familial breast and pancreatic cancer"
+    ],
+    "missing": [
+      "CDH1.",
+      "gene"
+    ]
+  },
+  "354": {
+    "question": "What is the relationship between medulloblastoma and HRAS?",
+    "answer": "Output: Medulloblastoma is activated by HRAS.",
+    "found": [
+      "hras"
+    ],
+    "missing": [
+      "activated"
+    ]
+  },
+  "355": {
+    "question": "What is the relationship between CEBPA and RUNX1T1?",
+    "answer": "Output: CEBPA negatively regulates RUNX1T1 through inhibition, according to the KEGG database.",
+    "found": [],
+    "missing": [
+      "regulates",
+      "inhibition",
+      "database.",
+      "through",
+      "according"
+    ]
+  },
+  "356": {
+    "question": "What is the relationship between PRDM2 and anal carcinoma?",
+    "answer": "Output: PRDM2 is driving to anal carcinoma, indicating a potential relationship between PRDM2 and anal carcinoma.",
+    "found": [
+      "ar"
+    ],
+    "missing": [
+      "indicating",
+      "potential",
+      "driving"
+    ]
+  },
+  "359": {
+    "question": "What is the relationship between anal carcinoma and TP53?",
+    "answer": "Output: TP53 is driving to anal carcinoma, and anal carcinoma is associated with TP53.",
+    "found": [
+      "palb2-associated familial breast and pancreatic cancer",
+      "tp53"
+    ],
+    "missing": [
+      "driving"
+    ]
+  },
+  "360": {
+    "question": "What is the relationship between DAXX and TGFBR2?",
+    "answer": "Output: DAXX positively regulates and activates TGFBR2 according to the KEGG DATABASE.",
+    "found": [],
+    "missing": [
+      "regulates",
+      "positively",
+      "DATABASE.",
+      "according",
+      "KEGG"
+    ]
+  },
+  "361": {
+    "question": "What is the relationship between APC and TCF7L2?",
+    "answer": "Output: APC positively regulates TCF7L2.",
+    "found": [
+      "tcf7l2"
+    ],
+    "missing": [
+      "positively",
+      "regulates"
+    ]
+  },
+  "362": {
+    "question": "What is the relationship between NCOR1 and FBXW7?",
+    "answer": "Output: NCOR1 and FBXW7 have a synthetic lethality relationship with a score of 0.8",
+    "found": [],
+    "missing": [
+      "synthetic",
+      "lethality",
+      "score"
+    ]
+  },
+  "363": {
+    "question": "What is the relationship between SMO and SHH?",
+    "answer": "Output: SMO inhibits SHH.",
+    "found": [],
+    "missing": [
+      "SHH.",
+      "inhibits"
+    ]
+  },
+  "364": {
+    "question": "What is the relationship between PML and SPI1?",
+    "answer": "Output: PML negatively regulates SPI1 through inhibition, according to the KEGG DATABASE with a score of 1.",
+    "found": [],
+    "missing": [
+      "regulates",
+      "score",
+      "inhibition",
+      "through",
+      "DATABASE"
+    ]
+  },
+  "366": {
+    "question": "What is the relationship between MYC and GSK3B?",
+    "answer": "Output: MYC negatively regulates GSK3B through inhibition and phosphorylation, according to the KEGG DATABASE.",
+    "found": [],
+    "missing": [
+      "regulates",
+      "inhibition",
+      "phosphorylation",
+      "through",
+      "DATABASE."
+    ]
+  },
+  "368": {
+    "question": "What is the relationship between WHIM syndrome and CXCR4?",
+    "answer": "Output: WHIM syndrome is caused by CXCR4.",
+    "found": [
+      "cxcr4"
+    ],
+    "missing": [
+      "caused"
+    ]
+  },
+  "369": {
+    "question": "What is the relationship between kaposis sarcoma and IL6?",
+    "answer": "Output: IL6 is caused by familial clustering of Kaposis sarcoma, which can develop into familial Kaposis sarcoma with a score of 10.",
+    "found": [
+      "familial cerebral cavernous angioma"
+    ],
+    "missing": [
+      "caused",
+      "clustering",
+      "into",
+      "score",
+      "develop"
+    ]
+  },
+  "370": {
+    "question": "What is the relationship between ovarian carcinoma and WT1?",
+    "answer": "Output: Ovarian carcinoma is caused by WT1.",
+    "found": [],
+    "missing": [
+      "caused",
+      "WT1."
+    ]
+  },
+  "371": {
+    "question": "What is the relationship between pheochromocytoma and TMEM127?",
+    "answer": "Output: TMEM127 is the cause of familial pheochromocytoma with an autosomal dominant inheritance mode and a score of 10 in development.",
+    "found": [
+      "familial cerebral cavernous angioma"
+    ],
+    "missing": [
+      "score",
+      "autosomal",
+      "inheritance",
+      "cause",
+      "development."
+    ]
+  },
+  "372": {
+    "question": "What is the relationship between Cowden syndrome 1 and uterus?",
+    "answer": "Output: Cowden syndrome 1 is associated with the development of uterine tumors, which are a type of tumor in the uterus.",
+    "found": [
+      "uterus",
+      "uterine leiomyosarcoma",
+      "chest wall tumors",
+      "pancreatic neuroendocrine tumor",
+      "palb2-associated familial breast and pancreatic cancer"
+    ],
+    "missing": [
+      "which",
+      "development",
+      "type"
+    ]
+  },
+  "373": {
+    "question": "What is the relationship between Inherited Epidermolysis Bullosa and MMP1?",
+    "answer": "Output: Inherited Epidermolysis Bullosa is caused by MMP1.",
+    "found": [
+      "mmp1"
+    ],
+    "missing": [
+      "caused"
+    ]
+  },
+  "379": {
+    "question": "How would you describe Bloom syndrome?",
+    "answer": "Output: Bloom syndrome is a rare genetic disorder that causes facial redness, skin fragility, and other symptoms.",
+    "found": [],
+    "missing": [
+      "genetic",
+      "disorder",
+      "facial",
+      "redness",
+      "fragility"
+    ]
+  },
+  "380": {
+    "question": "How would you describe Frasier syndrome?",
+    "answer": "Output: Frasier syndrome is a rare genetic disorder that affects the kidney and reproductive system. It is characterized by a combination of kidney disease and reproductive system abnormalities.",
+    "found": [
+      "polycystic kidney disease 1",
+      "ar",
+      "glycogen storage disease"
+    ],
+    "missing": [
+      "combination",
+      "genetic",
+      "disorder",
+      "reproductive",
+      "abnormalities."
+    ]
+  },
+  "399": {
+    "question": "What type of cancer can WHIM syndrome develop?",
+    "answer": "Output: WHIM syndrome can develop the following types of cancer: cervical cancer, oral cancer, and uterine cancer.",
+    "found": [
+      "cancer",
+      "endocervical adenocarcinoma",
+      "uterine leiomyosarcoma"
+    ],
+    "missing": [
+      "types",
+      "oral",
+      "following"
+    ]
+  }
+}

@@ -1,0 +1,159 @@
+{
+  "_comment": "Manual entity mappings for PcQA samples that couldn't be auto-extracted",
+  "_format": "index (1-based) -> list of correct entity names",
+
+  "36": {
+    "note": "osi-ertinib typo -> osimertinib",
+    "entities": ["osimertinib"]
+  },
+  "108": {
+    "note": "avonib not in DB - possibly ivosidenib",
+    "entities": ["ivosidenib"],
+    "uncertain": true
+  },
+  "131": {
+    "note": "Nalatinib not in DB - neratinib is similar",
+    "entities": ["neratinib"],
+    "uncertain": true
+  },
+  "134": {
+    "note": "encorafenib not in DB - cannot evaluate",
+    "entities": [],
+    "skip": true
+  },
+  "157": {
+    "note": "Relationship answer - gefitinib is the relevant entity",
+    "entities": ["gefitinib"]
+  },
+  "186": {
+    "note": "Relationship answer - osimertinib is the relevant entity",
+    "entities": ["osimertinib"]
+  },
+  "202": {
+    "note": "Relationship answer - lorlatinib is the relevant entity",
+    "entities": ["lorlatinib"]
+  },
+  "206": {
+    "note": "hemangioma not in DB - cannot evaluate",
+    "entities": [],
+    "skip": true
+  },
+  "207": {
+    "note": "Relationship answer about NSD1 and Weaver syndrome",
+    "entities": ["weaver syndrome"],
+    "uncertain": true
+  },
+  "211": {
+    "note": "Drug class question - not entity-based answer",
+    "entities": [],
+    "skip": true
+  },
+  "213": {
+    "note": "Drug class question - not entity-based answer",
+    "entities": [],
+    "skip": true
+  },
+  "231": {
+    "note": "Relationship answer - selpercatinib is the entity",
+    "entities": ["selpercatinib"]
+  },
+  "244": {
+    "note": "Relationship answer - vandetanib is the entity",
+    "entities": ["vandetanib"]
+  },
+  "248": {
+    "note": "Relationship answer - olaparib is the entity",
+    "entities": ["olaparib"]
+  },
+  "277": {
+    "note": "Relationship answer - lorlatinib is the entity",
+    "entities": ["lorlatinib"]
+  },
+  "282": {
+    "note": "Relationship answer - capmatinib is the entity",
+    "entities": ["capmatinib"]
+  },
+  "290": {
+    "note": "Relationship answer - osimertinib is the entity",
+    "entities": ["osimertinib"]
+  },
+  "302": {
+    "note": "Drug description - not entity-based answer",
+    "entities": [],
+    "skip": true
+  },
+  "307": {
+    "note": "Drug description - not entity-based answer",
+    "entities": [],
+    "skip": true
+  },
+  "327": {
+    "note": "Disease development - neurofibroma -> Neurofibromatosis in DB",
+    "entities": ["neurofibromatosis"]
+  },
+  "332": {
+    "note": "Disease development - bone cancer/blood tumors not in DB as specific entities",
+    "entities": [],
+    "skip": true
+  },
+  "333": {
+    "note": "Disease development - lymphoma found as hodgkin/non-hodgkin lymphoma in DB",
+    "entities": ["hodgkin lymphoma", "non-hodgkin lymphoma"],
+    "uncertain": true
+  },
+  "336": {
+    "note": "Relationship answer - ATM gene",
+    "entities": ["atm"]
+  },
+  "338": {
+    "note": "Relationship answer - APC gene",
+    "entities": ["apc"]
+  },
+  "343": {
+    "note": "Disease question - osteogenesis imperfecta not in cancer DB",
+    "entities": [],
+    "skip": true
+  },
+  "351": {
+    "note": "DICER1 syndrome -> DICER 1 syndrome (with space) in DB",
+    "entities": ["dicer 1 syndrome"]
+  },
+  "356": {
+    "note": "Gene regulation relationship - no entity answer",
+    "entities": [],
+    "skip": true
+  },
+  "361": {
+    "note": "Gene regulation relationship - no entity answer",
+    "entities": [],
+    "skip": true
+  },
+  "363": {
+    "note": "Gene relationship - synthetic lethality, no entity",
+    "entities": [],
+    "skip": true
+  },
+  "364": {
+    "note": "Gene inhibition relationship - SHH gene",
+    "entities": ["shh"]
+  },
+  "365": {
+    "note": "Gene regulation relationship - no entity answer",
+    "entities": [],
+    "skip": true
+  },
+  "367": {
+    "note": "Gene regulation relationship - no entity answer",
+    "entities": [],
+    "skip": true
+  },
+  "371": {
+    "note": "Cancer-gene relationship - WT1 gene",
+    "entities": ["wt1"]
+  },
+  "380": {
+    "note": "Syndrome description - not entity-based answer",
+    "entities": [],
+    "skip": true
+  }
+}
