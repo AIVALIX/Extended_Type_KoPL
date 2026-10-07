@@ -43,6 +43,8 @@ app/volume_pcqa/
 /data/
 !/data/
 /data/*
+!/data/LICENSE
+!/data/THIRD_PARTY_DATA.md
 !/data/metaqa
 !/data/metaqa/**
 !/data/primekgqa
@@ -61,6 +63,10 @@ app/volume_pcqa/
 !/data/pcqa/qa
 /data/pcqa/qa/*
 !/data/pcqa/qa/eval_v2.jsonl
+# eval_v2_clean.jsonl is the PcQA benchmark reported in the paper (n=205,
+# after the type-consistency audit); it must ship for the results to be
+# reproducible.
+!/data/pcqa/qa/eval_v2_clean.jsonl
 !/data/pcqa/qa/eval_v3.jsonl
 
 # Nested data/ inside app/ is dev-only
@@ -91,6 +97,7 @@ scripts/
 # =============================================================================
 app/experiments/
 app/__pycache__/
+app/pipeline/debug.py
 app/pipeline/extended_type_kopl/pipeline.py.bak
 app/pipeline/extended_type_kopl/pipeline.py.current
 app/pipeline/extended_type_kopl/pipeline.py.current2

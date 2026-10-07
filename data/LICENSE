@@ -1,0 +1,76 @@
+Data license for `data/`
+========================
+
+Copyright (c) 2026 AIVALIX Inc. and Indigo Corporation
+
+The files in this directory that are **this project's own contributions** are
+licensed under the Creative Commons Attribution 4.0 International License
+(CC BY 4.0):
+
+    https://creativecommons.org/licenses/by/4.0/
+    Legal code: https://creativecommons.org/licenses/by/4.0/legalcode
+
+Every dataset in `data/` originates from a third-party source. This license
+covers only the work added here on top of those sources — the reconstructed
+gold answer sets, the entity grounding and correction tables, the query-pattern
+classification, and the format conversions. It does **not** and cannot
+re-license the upstream data itself, which remains governed by its own terms.
+`THIRD_PARTY_DATA.md` in this directory lists every upstream source, its
+license, and the modifications made here.
+
+
+Scope
+-----
+
+CC BY 4.0, original contributions of this project:
+
+    pcqa/qa/eval_v2.jsonl          Entity-set gold, 241 questions
+    pcqa/qa/eval_v2_clean.jsonl    Entity-set gold after the type-consistency
+                                   audit, 205 questions (the PcQA benchmark
+                                   reported in the paper)
+    pcqa/qa/eval_v3.jsonl          Entity-set gold, earlier 352-question build
+    pcqa/entity_mappings.json      Seed-entity to KG-node grounding map
+    pcqa/manual_entity_fixes.json  Manual synonym / spelling corrections
+    pcqa/sample_categories.json    17 (anchor, target-type) query patterns
+
+CC BY 4.0 as a derived adaptation; the upstream license also applies and the
+modification is recorded in `THIRD_PARTY_DATA.md`:
+
+    metaqa/import_nodes.csv        Neo4j-import conversion of MetaQA
+    metaqa/import_rels.csv
+    metaqa/qa/*.jsonl              Evaluation-format conversion of MetaQA
+    pcqa/import_nodes.csv          Neo4j-import conversion of the public
+    pcqa/import_rels.csv           subset of the KGT pan-cancer graph
+    primekgqa/import_nodes.csv     Neo4j-import conversion of PrimeKG nodes
+
+Not covered by this license:
+
+    pcqa/PcQA.json                 Redistributed from the KGT release (CC0 1.0)
+    pcqa/README.md                 Describes the upstream KGT graph build
+    pcqa/build_eval_cypher.py      Source code — MIT, see the repository root
+
+
+Attribution
+-----------
+
+When reusing the CC BY 4.0 material above, please credit:
+
+    Kotaro Oshima and Yoichi Takahashi.
+    "Grounding Extended Type-KoPL with KG-Structure Feedback:
+     Anchor-Probe Feedback and Cypher-Informed Reranking."
+    KGE-LLM 2026 Workshop at IJCKG 2026. CEUR Workshop Proceedings.
+    https://github.com/AIVALIX/Extended_Type_KoPL
+
+and indicate whether you modified the material. Reuse of the underlying
+datasets additionally requires the attribution demanded by their own licenses
+(MetaQA in particular is CC BY 3.0 and requires both attribution and a notice
+of modification).
+
+
+No warranty
+-----------
+
+The data is provided "as is", without warranty of any kind. The reconstructed
+PcQA gold answer sets were produced by an LLM classifier with manual review and
+a type-consistency audit, as described in the paper; residual annotation errors
+are possible.

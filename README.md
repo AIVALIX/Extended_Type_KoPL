@@ -1,12 +1,14 @@
 # Extended Type-KoPL (ETK) — APF + PA-CIR
 
-Reference implementation for the paper **"A KG-Structure Feedback Agent for Extended Type-KoPL: Anchor-Edge Feedback and Cypher-Trial Reranking."**
+Reference implementation for the paper **"Grounding Extended Type-KoPL with KG-Structure Feedback: Anchor-Probe Feedback and Cypher-Informed Reranking"** (KGE-LLM 2026 Workshop at IJCKG 2026).
 
 This codebase implements ETK with two new mechanisms:
 - **APF (Anchor-Probe Feedback):** injects anchor-specific real-edge information into the Phase 4 → 1 correction prompt to reduce *empty-query failures*.
 - **PA-CIR (Probe-Aware Cypher-Informed Reranking):** augments the Phase 3b reranker with lightweight Cypher-trial results to reduce *misselection of unreachable candidates*.
 
 It also includes same-condition reimplementations of **KGT** and **SAFE** used for the comparison in the paper.
+
+See **[PROMPTS.md](PROMPTS.md)** for the LLM prompts used by each phase, what APF and PA-CIR change about them, and worked examples from the reported runs.
 
 ## Repository Layout
 
@@ -21,8 +23,14 @@ app/
   database/
     seed.py                # KG seeding (Neo4j import)
   ...
+data/
+  metaqa/ primekgqa/ pcqa/ # Neo4j-import CSVs and QA splits
+  LICENSE                  # CC BY 4.0, scoped to our own contributions
+  THIRD_PARTY_DATA.md      # Upstream sources, licenses, modifications
 config/.env                # Runtime configuration (you create this)
 docker-compose.yaml        # All services: one app container + five Neo4j
+PROMPTS.md                 # Prompts per phase + worked success/failure cases
+LICENSE                    # MIT (code)
 ```
 
 ## 1. Prerequisites
@@ -106,7 +114,15 @@ docker compose run --rm --entrypoint="" neo4j_metaqa \
         --overwrite-destination=true neo4j
 ```
 
-PcQA additionally requires building the entity-set gold (see Section 4.1 of the paper). Run:
+For PcQA, the entity-set gold evaluated in the paper ships ready to use:
+
+| File | Questions | Used for |
+|---|---|---|
+| `data/pcqa/qa/eval_v2_clean.jsonl` | 205 | **The PcQA benchmark reported in the paper** (after the type-consistency audit) |
+| `data/pcqa/qa/eval_v2.jsonl` | 241 | Before the audit |
+| `data/pcqa/qa/eval_v3.jsonl` | 352 | Earlier build |
+
+To rebuild the gold from `PcQA.json` instead of using the shipped files (see Section 5.1 of the paper for the procedure):
 
 ```bash
 docker exec -it python-primekgqa-experiment \
@@ -237,13 +253,38 @@ Per-run outputs land in `result/<run-tag>/<pipeline>/<kg>_<subset>/extended_type
 ```bibtex
 @inproceedings{oshima2026etk_apf_pacir,
     author    = {Oshima, Kotaro and Takahashi, Yoichi},
-    title     = {A KG-Structure Feedback Agent for Extended Type-KoPL:
-                 Anchor-Edge Feedback and Cypher-Trial Reranking},
-    booktitle = {Proceedings of the International Joint Conference on Knowledge Graphs (IJCKG)},
+    title     = {Grounding Extended Type-KoPL with KG-Structure Feedback:
+                 Anchor-Probe Feedback and Cypher-Informed Reranking},
+    booktitle = {Proceedings of the International Workshop on Knowledge Graph
+                 Engineering in the Era of Large Language Models (KGE-LLM 2026)
+                 co-located with IJCKG 2026},
+    series    = {CEUR Workshop Proceedings},
+    publisher = {CEUR-WS.org},
     year      = {2026}
 }
 ```
 
 ## License
 
-Released for research reproduction purposes. See the manuscript for the disclosure of interests.
+This repository is released under two licenses, by directory.
+
+| Path | License | Covers |
+|---|---|---|
+| `app/`, `docker-compose.yaml`, `data/**/*.py` | **MIT** ([LICENSE](LICENSE)) | All source code |
+| `data/` | **CC BY 4.0** ([data/LICENSE](data/LICENSE)) | This project's own data contributions only |
+
+Every dataset under `data/` derives from a third-party release, and the CC BY 4.0
+grant covers only what this project added on top: the reconstructed PcQA
+entity-set gold, the entity grounding and correction tables, the query-pattern
+classification, and the format conversions. The upstream sources keep their own
+terms — MetaQA is CC BY 3.0, PrimeKG and the public KGT subset are CC0 1.0, and
+PrimeKGQA is CC BY 4.0. [data/THIRD_PARTY_DATA.md](data/THIRD_PARTY_DATA.md)
+records each source, its license, and the modifications made here; reusing the
+data means honouring those terms as well.
+
+Note that the complete SmartQuerier Oncology Knowledge Graph behind KGT is
+proprietary. Only the subset its authors released publicly is converted and
+redistributed here.
+
+The accompanying paper is published open access under CC BY 4.0 in the CEUR
+Workshop Proceedings.
